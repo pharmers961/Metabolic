@@ -1,8 +1,8 @@
-const CACHE = 'mm-tracker-v1';
-const ASSETS = ['./', './index.html', './app.js', './manifest.json', './icon-192.png', './icon-512.png'];
+const CACHE = 'mm-tracker-v2.0.0'; // bump this on every release so clients get the update toast
+const ASSETS = ['./', './index.html', './app.js', './program.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
 });
 
 self.addEventListener('activate', (e) => {
@@ -11,10 +11,24 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// The app shows an "update ready" toast; refreshing posts this message.
+self.addEventListener('message', (e) => {
+  if (e.data === 'SKIP_WAITING') self.skipWaiting();
+});
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window' }).then((cs) => {
+    if (cs.length) return cs[0].focus();
+    return self.clients.openWindow('./');
+  }));
+});
+
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  // Never cache Fitbit API calls
-  if (url.hostname.includes('fitbit.com')) return;
+  if (e.request.method !== 'GET') return;
+  // Never cache API/auth calls
+  if (url.hostname.includes('fitbit.com') || url.hostname.includes('googleapis.com') || url.hostname.includes('google.com')) return;
   e.respondWith(
     caches.match(e.request).then((cached) => {
       const fetched = fetch(e.request)

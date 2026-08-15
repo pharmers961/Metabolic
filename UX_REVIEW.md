@@ -1,5 +1,7 @@
 # Metabolic Method Tracker — UI/UX Review
 
+> **Status: all 48 recommendations implemented** in the v2 rebuild on this branch (`index.html`, `app.js`, `program.js`, `sw.js`). The two caveats are platform limits, not omissions: true background notifications while the PWA is fully suspended aren't possible without a push server (the timer instead survives suspension via end-timestamps, re-fires on return, and notifies whenever the browser allows), and Google Calendar/Drive OAuth requires a personal Google Client ID (3-minute one-time setup, documented in the README) — the no-auth `.ics`/template-link tier works with zero setup.
+
 48 recommendations, based on a full read of `app.js`/`index.html`, screenshots of every screen at phone size, and the Workout Template Guide V2 PDF the program is encoded from.
 
 **Priority key:** **P0** = do first (fixes a daily pain or a data-loss risk) · **P1** = next · **P2** = later polish.
