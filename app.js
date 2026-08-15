@@ -7,6 +7,7 @@ const $$=(s,el)=>[...(el||document).querySelectorAll(s)];
 const esc=(s)=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const phaseById=(id)=>PROGRAM.find(p=>p.id===id)||PROGRAM[0];
 const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const DOWF=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const BYDAY=['SU','MO','TU','WE','TH','FR','SA'];
 const dkey=(d)=>{const x=new Date(d);return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}-${String(x.getDate()).padStart(2,'0')}`};
 const mondayOf=(d)=>{const x=new Date(d);x.setHours(0,0,0,0);x.setDate(x.getDate()-((x.getDay()+6)%7));return x};
@@ -2341,7 +2342,7 @@ function onboardingSheet(){
   <label class="f">Weights in</label>
   <div class="pills"><button class="pill on" data-u="lb">Pounds (lb)</button><button class="pill" data-u="kg">Kilograms (kg)</button></div>
   <label class="f">Which days can you usually train?</label>
-  ${[1,2,3,4,5,6,0].map(wd=>`<div class="togglerow"><div class="tl">${DOW[wd]}day</div>
+  ${[1,2,3,4,5,6,0].map(wd=>`<div class="togglerow"><div class="tl">${DOWF[wd]}</div>
     <input type="checkbox" data-obwd="${wd}" ${defaultOn.includes(wd)?'checked':''}></div>`).join('')}
   <label class="f">Which month of the program are you in?</label>
   <div class="pills" id="obMonth">${[1,2,3,4,5,6].map(m=>`<button class="pill ${m===1?'on':''}" data-m="${m}">M${m}</button>`).join('')}</div>
