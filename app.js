@@ -18,6 +18,16 @@ const haptic=(pat)=>{if(S.prefs.haptic&&navigator.vibrate)navigator.vibrate(pat|
 const firstNum=(s)=>{const m=String(s??'').match(/\d+(\.\d+)?/);return m?+m[0]:null};
 const plateStep=()=>S.unit==='kg'?2.5:5;
 const roundPlate=(w)=>Math.round(w/plateStep())*plateStep();
+const parseTimed=(r)=>{const m=String(r||'').match(/(\d+)\s*(sec|min|s|m)\b/i);
+  return m?+m[1]*(/^m/i.test(m[2])?60:1):null};
+function plateBreakdown(w){
+  const bar=S.unit==='kg'?20:45;
+  if(w<=bar)return `${w} ${S.unit} — lighter than the bar; use dumbbells or an empty bar.`;
+  const plates=S.unit==='kg'?[25,20,15,10,5,2.5,1.25]:[45,35,25,10,5,2.5];
+  let side=(w-bar)/2,out=[];
+  for(const p of plates){while(side>=p-0.01){out.push(p);side-=p}}
+  return `${w} ${S.unit} = bar + ${out.length?out.join(' + '):'nothing'} per side`;
+}
 
 /* ------------------------------ storage ------------------------------ */
 function openDB(){return new Promise((res,rej)=>{const r=indexedDB.open('mm-db',1);
@@ -54,6 +64,8 @@ function normalize(st){
   out.lifts=st&&st.lifts||{}; out.subs=st&&st.subs||{}; out.restOverrides=st&&st.restOverrides||{};
   out.plans=st&&st.plans||{};
   out.custom=st&&st.custom||JSON.parse(JSON.stringify(CUSTOM_SEED));
+  out.videos=st&&st.videos||{};
+  out.bw=st&&st.bw||[];
   out.onboarded=!!(st&&st.onboarded)||!!(st&&st.sessions&&st.sessions.length); // existing users skip onboarding
   (out.sessions||[]).forEach(s=>{if(!s.id)s.id=s.date});
   return out;
@@ -115,14 +127,17 @@ function mergeImport(d){
 }
 
 /* ------------------------------ sheets & toasts ------------------------------ */
-let sheetOnClose=null;
+let sheetOnClose=null,sheetOpener=null;
 function sheet(html,onClose){
   sheetOnClose=onClose||null;
+  if(!$('#sheetWrap').classList.contains('on'))sheetOpener=document.activeElement;
   $('#sheet').innerHTML=html;
   $('#sheetWrap').classList.add('on');
   const f=$('#sheet').querySelector('button,input,select,textarea');if(f)f.focus();
 }
 function closeSheet(){$('#sheetWrap').classList.remove('on');$('#sheet').innerHTML='';
+  if(sheetOpener&&document.contains(sheetOpener)){try{sheetOpener.focus()}catch(e){}}
+  sheetOpener=null;
   if(sheetOnClose){const f=sheetOnClose;sheetOnClose=null;f()}}
 function confirmSheet(title,body,okLabel,onOk,danger){
   sheet(`<h2>${esc(title)}</h2><div class="sub" style="font-size:14px">${esc(body)}</div>
@@ -161,7 +176,7 @@ function sessionLabel(s){
   return s.customId?(s.name||'Custom workout'):`Phase ${s.phase} · ${sessionDay(s).name}`;
 }
 function activeDay(){
-  return S.active.customId?{name:S.active.name,items:(customById(S.active.customId)||{items:[]}).items}
+  return S.active.customId?{name:S.active.name,items:customDayItems(customById(S.active.customId)||{items:[]})}
     :phaseById(S.active.phase).days[S.active.day];
 }
 function perSetTargets(reps,n){ // '12/10/8' -> per-set; otherwise same target each set
@@ -606,6 +621,11 @@ function renderToday(){
       return `<div class="card"><b style="font-size:14px">📈 ${single?'The trend starts at your next PR':'No strength trend yet'}</b>
       <div class="sub">${single?`${esc(LIFTS[single.k].label)} baseline is ${single.e} ${esc(S.unit)} — beat it once and this card starts charting the climb.`:
       'Save a 1RM (Stats → Lifts) and this card starts tracking how much stronger you’re getting.'}</div></div>`})():''}
+  <div class="card"><div class="row">
+    <div class="grow"><label class="f" style="margin:0">Bodyweight</label>
+      <div class="sub">${S.bw.length?`${S.bw[S.bw.length-1].w} ${esc(S.unit)} · ${new Date(S.bw[S.bw.length-1].date+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'})}${S.bw.length>1?` · ${(S.bw[S.bw.length-1].w-S.bw[0].w>=0?'+':'')+(S.bw[S.bw.length-1].w-S.bw[0].w).toFixed(1)} since start`:''}`:'Recomposition is half the program — log it weekly.'}</div></div>
+    <input id="bwIn" type="number" inputmode="decimal" step="0.1" placeholder="${esc(S.unit)}" style="width:86px;text-align:center">
+    <button class="btn small" id="bwSave">Log</button></div></div>
   <div class="card"><label class="f" style="margin-top:0">The 6-month journey</label>${journeyHTML()}</div>
   ${stale?`<div class="card" style="border-color:var(--gold-dim)"><div class="row">
     <div class="grow"><b style="font-size:14px">Back up your training log</b>
@@ -617,6 +637,15 @@ function renderToday(){
   const pw=$('#plWeek');if(pw)pw.onclick=()=>planWeekSheet(wk);
   const pe=$('#plEdit');if(pe)pe.onclick=()=>planWeekSheet(wk);
   const ms=$('#msFix');if(ms)ms.onclick=()=>rescheduleSheet(missed);
+  const bs=$('#bwSave');if(bs)bs.onclick=()=>{
+    const w=+$('#bwIn').value;
+    if(!w){toast('Enter your weight first.');return}
+    const k=dkey(now);
+    const ex=S.bw.find(x=>x.date===k);
+    if(ex)ex.w=w;else S.bw.push({date:k,w});
+    S.bw.sort((a,b)=>a.date<b.date?-1:1);save();renderToday();
+    toast(`Logged ${w} ${S.unit}.`,{gold:true});
+  };
 }
 function lastWorkoutName(){
   const s=S.sessions[S.sessions.length-1];if(!s)return'';
@@ -675,41 +704,62 @@ function renderTrain(){
 }
 
 /* --- custom workout editor --- */
+function exerciseNameUniverse(){ // for autocomplete: program + custom + everything ever logged (#66)
+  const names=new Set();
+  programIndex().forEach(x=>names.add(dispName(x.name)));
+  (S.custom||[]).forEach(c=>c.items.forEach(it=>names.add(it.n)));
+  S.sessions.forEach(s=>Object.values(s.log).forEach(x=>{if(x.sets)names.add(x.name)}));
+  return [...names].filter(Boolean).sort();
+}
 function customEditorSheet(id){
   const src=id?customById(id):null;
   const draft=src?JSON.parse(JSON.stringify(src)):{id:null,name:'',items:[{n:'',s:3,r:'12',rest:60}]};
   function draw(){
     sheet(`<h2>${src?'Edit workout':'New workout'}</h2>
+    <datalist id="exDL">${exerciseNameUniverse().map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
     <label class="f">Workout name</label>
     <input id="cwName" value="${esc(draft.name)}" placeholder="e.g. Arm Blaster">
     <label class="f">Exercises</label>
-    ${draft.items.map((it,i)=>`<div class="card" style="padding:10px;margin-bottom:8px">
-      <div class="row"><input data-f="n" data-i="${i}" value="${esc(it.n)}" placeholder="Exercise name" class="grow">
+    ${draft.items.map((it,i)=>`<div class="card" style="padding:10px;margin-bottom:8px${it.ss?';border-left:3px solid var(--gold-dim);margin-left:10px':''}">
+      <div class="row"><input data-f="n" data-i="${i}" list="exDL" value="${esc(it.n)}" placeholder="Exercise name (autocompletes)" class="grow" autocapitalize="words">
+        <button class="btn small ghost" data-up="${i}" aria-label="Move up" ${i===0?'disabled':''}>↑</button>
+        <button class="btn small ghost" data-dn="${i}" aria-label="Move down" ${i===draft.items.length-1?'disabled':''}>↓</button>
         <button class="btn small danger" data-rm="${i}" aria-label="Remove exercise">✕</button></div>
       <div class="row" style="margin-top:8px">
-        <div class="grow"><label class="f" style="margin:0 0 4px">Sets</label>
-          <input data-f="s" data-i="${i}" type="number" inputmode="numeric" min="1" max="10" value="${esc(it.s)}"></div>
+        ${it.ss?'':`<div class="grow"><label class="f" style="margin:0 0 4px">Sets</label>
+          <input data-f="s" data-i="${i}" type="number" inputmode="numeric" min="1" max="10" value="${esc(it.s)}"></div>`}
         <div class="grow"><label class="f" style="margin:0 0 4px">Reps</label>
-          <input data-f="r" data-i="${i}" value="${esc(it.r)}" placeholder="12-15"></div>
-        <div class="grow"><label class="f" style="margin:0 0 4px">Rest (sec)</label>
-          <input data-f="rest" data-i="${i}" type="number" inputmode="numeric" value="${esc(it.rest)}"></div>
-      </div></div>`).join('')}
+          <input data-f="r" data-i="${i}" value="${esc(it.r)}" placeholder="12-15 or 30 sec"></div>
+        ${it.ss?'':`<div class="grow"><label class="f" style="margin:0 0 4px">Rest (sec)</label>
+          <input data-f="rest" data-i="${i}" type="number" inputmode="numeric" value="${esc(it.rest)}"></div>`}
+      </div>
+      ${i>0?`<div class="togglerow" style="margin-top:6px;border:none;padding:6px 0 0"><div class="td">Superset with previous (shares its rounds &amp; rest)</div>
+        <input type="checkbox" data-ss="${i}" ${it.ss?'checked':''}></div>`:''}
+      </div>`).join('')}
     <button class="btn small ghost" id="cwAdd">+ Add exercise</button>
     <div class="row" style="margin-top:16px">
       <button class="btn ghost" id="cwCancel">Cancel</button>
       <button class="btn" id="cwSave">Save workout</button></div>
-    ${src?'<button class="btn danger" id="cwDel" style="margin-top:8px">Delete this workout…</button>':''}`);
+    ${src?`<div class="row" style="margin-top:8px">
+      <button class="btn ghost" id="cwDup">Duplicate</button>
+      <button class="btn danger" id="cwDel">Delete…</button></div>`:''}`);
     $$('#sheet input[data-f]').forEach(inp=>inp.oninput=()=>{
       const it=draft.items[+inp.dataset.i];
       it[inp.dataset.f]=inp.dataset.f==='n'||inp.dataset.f==='r'?inp.value:(+inp.value||0);
     });
     $('#cwName').oninput=(e)=>{draft.name=e.target.value};
     $$('#sheet [data-rm]').forEach(b=>b.onclick=()=>{draft.items.splice(+b.dataset.rm,1);draw()});
+    $$('#sheet [data-up]').forEach(b=>b.onclick=()=>{const i=+b.dataset.up;
+      [draft.items[i-1],draft.items[i]]=[draft.items[i],draft.items[i-1]];draw()});
+    $$('#sheet [data-dn]').forEach(b=>b.onclick=()=>{const i=+b.dataset.dn;
+      [draft.items[i+1],draft.items[i]]=[draft.items[i],draft.items[i+1]];draw()});
+    $$('#sheet [data-ss]').forEach(c=>c.onchange=()=>{draft.items[+c.dataset.ss].ss=c.checked;draw()});
     $('#cwAdd').onclick=()=>{draft.items.push({n:'',s:3,r:'12',rest:60});draw()};
     $('#cwCancel').onclick=closeSheet;
     $('#cwSave').onclick=()=>{
       draft.name=draft.name.trim();
-      draft.items=draft.items.filter(it=>it.n.trim()).map(it=>({n:it.n.trim(),s:Math.max(1,+it.s||1),r:String(it.r||'').trim()||'10',rest:Math.max(0,+it.rest||0)}));
+      draft.items=draft.items.filter(it=>it.n.trim()).map((it,i)=>({n:it.n.trim(),s:Math.max(1,+it.s||1),
+        r:String(it.r||'').trim()||'10',rest:Math.max(0,+it.rest||0),ss:i>0&&!!it.ss}));
       if(!draft.name){toast('Give the workout a name.');return}
       if(!draft.items.length){toast('Add at least one exercise.');return}
       if(!draft.id)draft.id='cw'+Date.now();
@@ -717,6 +767,12 @@ function customEditorSheet(id){
       if(i>=0)S.custom[i]=draft;else S.custom.push(draft);
       save();closeSheet();renderTrain();
       toast(`Saved “${draft.name}” — it's in Train → My workouts.`,{gold:true});
+    };
+    const dup=$('#cwDup');if(dup)dup.onclick=()=>{
+      const copy=JSON.parse(JSON.stringify(draft));
+      copy.id='cw'+Date.now();copy.name=copy.name+' (copy)';
+      S.custom.push(copy);save();closeSheet();renderTrain();
+      toast(`Duplicated as “${copy.name}”.`);
     };
     const del=$('#cwDel');if(del)del.onclick=()=>confirmSheet(`Delete “${draft.name}”?`,
       'The workout definition is removed. Sessions you already logged with it stay in your history.','Delete',()=>{
@@ -757,17 +813,34 @@ function startSession(phaseId,dayIdx,week){
   sessionPRs={};foldState={};
   save();acquireWakeLock();
 }
+function customDayItems(c){ // custom list → day items; `ss:true` chains an exercise onto the previous as a superset
+  const out=[];
+  (c.items||[]).forEach(it=>{
+    if(it.ss&&out.length){
+      const prev=out[out.length-1];
+      if(prev.t==='ex'){out[out.length-1]={t:'ss',s:prev.s,rest:prev.rest,label:'Superset',
+        items:[{n:prev.n,r:prev.r},{n:it.n,r:it.r}]}}
+      else prev.items.push({n:it.n,r:it.r});
+    }else out.push({t:'ex',n:it.n,s:it.s,r:it.r,rest:it.rest});
+  });
+  return out;
+}
+function prefillSets(name,count){
+  const prev=lastSets(dispName(name));
+  return Array.from({length:count},(_,si)=>{
+    const pw=prev&&(prev.sets[si]||prev.sets[prev.sets.length-1]);
+    return {w:pw&&pw.w?pw.w:'',r:'',done:false};
+  });
+}
 function startCustomSession(id){
   const c=customById(id);if(!c)return;
-  const log={};
-  c.items.forEach((it,ii)=>{
+  const items=customDayItems(c),log={};
+  items.forEach((it,ii)=>{
     const key='c'+ii;
-    const prev=lastSets(dispName(it.n));
-    log[key]={name:dispName(it.n),slot:it.n,
-      sets:Array.from({length:it.s},(_,si)=>{
-        const pw=prev&&(prev.sets[si]||prev.sets[prev.sets.length-1]);
-        return {w:pw&&pw.w?pw.w:'',r:'',done:false};
-      })};
+    if(it.t==='ex')log[key]={name:dispName(it.n),slot:it.n,sets:prefillSets(it.n,it.s)};
+    else it.items.forEach((sub,si)=>{
+      log[key+'s'+si]={name:dispName(sub.n),slot:sub.n,ss:key,sets:prefillSets(sub.n,it.s)};
+    });
   });
   S.active={customId:id,name:c.name,week:S.pos.week,started:Date.now(),log,notes:{}};
   sessionPRs={};foldState={};
@@ -784,8 +857,8 @@ function sessionCounts(){
 }
 function cardOrder(){ // descriptors for the active day
   if(S.active.customId){
-    const c=customById(S.active.customId);
-    return (c?c.items:[]).map((it,ii)=>({id:'c'+ii,type:'ex',it:Object.assign({t:'ex'},it),key:'c'+ii}));
+    const items=customDayItems(customById(S.active.customId)||{items:[]});
+    return items.map((it,ii)=>({id:'c'+ii,type:it.t==='ss'?'ss':'ex',it,key:'c'+ii}));
   }
   const phase=phaseById(S.active.phase),day=phase.days[S.active.day],out=[];
   const wuIdx=[];day.items.forEach((it,ii)=>{if(it.t==='wu')wuIdx.push(ii)});
@@ -823,6 +896,7 @@ function renderSession(el){
         <button id="mDiscard" class="dngr">Discard workout…</button>
       </div></div></div>
     <div class="pbar"><div id="pfill"></div></div>
+    <div class="jumpbar" id="jumpbar" aria-label="Jump to exercise"></div>
   </div>
   <div id="sessBody" class="twocol"></div>
   <button class="btn" id="finish" style="margin-top:14px">Finish workout</button>`;
@@ -835,6 +909,10 @@ function renderSession(el){
     const node=build();cardEls[c.id]=node;body.appendChild(node);
   });
   refreshFocus();updateBar();
+  // resuming mid-session: bring the current exercise back on screen
+  const anyDone=Object.values(S.active.log).some(x=>(x.sets&&x.sets.some(s=>s.done))||(x.wu&&x.done));
+  const curId=currentCardId();
+  if(anyDone&&curId&&cardEls[curId])setTimeout(()=>cardEls[curId].scrollIntoView({block:'center'}),60);
   $('#finish',el).onclick=finishSheet;
   const mb=$('#sessMenuBtn',el),menu=$('#sessMenu',el);
   mb.onclick=(e)=>{e.stopPropagation();menu.hidden=!menu.hidden};
@@ -856,6 +934,21 @@ function refreshFocus(){
     const el=cardEls[c.id];if(!el)return;
     el.classList.toggle('current',c.id===curId);
   });
+  const jb=$('#jumpbar');
+  if(jb){
+    jb.innerHTML='';
+    cardOrder().forEach((c,i)=>{
+      const b=document.createElement('button');b.className='jchip';
+      b.textContent=c.type==='wu'?'W':String(i+(cardOrder()[0].type==='wu'?0:1));
+      const done=cardComplete(c);
+      b.classList.toggle('done',done);
+      b.classList.toggle('cur',c.id===curId);
+      const nm=c.type==='wu'?'Warm-up':c.type==='ex'?S.active.log[c.key].name:(c.it.label||'Superset');
+      b.setAttribute('aria-label',`${nm}${done?', done':''}`);
+      b.onclick=()=>{if(cardEls[c.id])cardEls[c.id].scrollIntoView({block:'start',behavior:'smooth'})};
+      jb.appendChild(b);
+    });
+  }
 }
 function updateBar(){
   const c=sessionCounts();
@@ -918,8 +1011,17 @@ function buildExCard(c){
   const t=target(c.it,phase,S.active.week);
   const sugg=phase?suggestedLoad(c.it,phase,S.active.week):null;
   const restSec=S.restOverrides[c.it.n]??c.it.rest;
-  const meta=`${t.s} × ${t.r}${sugg?` · <span class="sugg">try ${sugg} ${esc(S.unit)}</span>`:''}${restSec?` · rest ${fmtRest(restSec)}`:''}`;
+  const bar=S.unit==='kg'?20:45;
+  const meta=`${t.s} × ${t.r}${sugg?` · <button class="sugg" style="padding:0;font:inherit;color:var(--gold);text-decoration:underline dotted" aria-label="Plate math for ${sugg}">try ${sugg} ${esc(S.unit)}</button>`:''}${restSec?` · rest ${fmtRest(restSec)}`:''}`;
   const body=exBlock(c,e,meta,t,restSec,!!(phase&&phase.wave&&c.it.wave));
+  if(sugg){
+    const sg=$('.sugg',body);if(sg)sg.onclick=()=>toast(plateBreakdown(sugg),{gold:true,ms:8000});
+    if(sugg>=bar*2){ // warm-up ramp for meaningful barbell loads (#61)
+      const ramp=document.createElement('div');ramp.className='exmeta';ramp.style.color='var(--muted)';
+      ramp.textContent=`Ramp: bar ×10 · ${roundPlate(sugg*.5)} ×5 · ${roundPlate(sugg*.7)} ×3 → work sets`;
+      const m=$('.exmeta',body);if(m)m.after(ramp);
+    }
+  }
   const complete=e.sets.every(s=>s.done);
   return foldWrap(c.key,complete,
     `<span class="ok">✓</span><span class="grow exname">${esc(e.name)}</span><span class="best">${esc(bestSetLabel(e.sets))}</span>`,body);
@@ -928,7 +1030,7 @@ function exBlock(c,e,metaHTML,t,restSec,showRpe){
   const frag=document.createElement('div');
   const targets=perSetTargets(t.r,e.sets.length);
   const prev=lastSets(e.name);
-  frag.innerHTML=`<button class="exname" data-ex>${esc(e.name)}</button><div class="exmeta">${metaHTML}</div>
+  frag.innerHTML=`<button class="exname" data-ex>${esc(e.name)}</button>${S.videos[e.slot]?` <a class="vbtn" href="${esc(S.videos[e.slot])}" target="_blank" rel="noopener" aria-label="Watch ${esc(e.name)} demo">▶</a>`:''}<div class="exmeta">${metaHTML}</div>
     ${prev?`<div class="lastlog">Last (${new Date(prev.date).toLocaleDateString(undefined,{month:'short',day:'numeric'})}): ${esc(prev.sets.map(x=>`${x.w||'—'}×${x.r||'—'}`).join(', '))}</div>`:''}
     <div class="colhead ${showRpe?'rpe':''}"><span>Set</span><span></span><span>${esc(S.unit)}</span><span></span><span>Reps</span>${showRpe?'<span>RPE</span>':''}<span>✓</span></div>`;
   $('[data-ex]',frag).onclick=()=>exerciseSheet(e.slot,e.name);
@@ -955,31 +1057,79 @@ function exBlock(c,e,metaHTML,t,restSec,showRpe){
   }
   return frag;
 }
+/* swipe-right on a set row = complete it (#63) */
+function addSwipe(row,tickBtn){
+  let sx=null,sy=null,dx=0;
+  row.addEventListener('touchstart',(ev)=>{sx=ev.touches[0].clientX;sy=ev.touches[0].clientY;dx=0},{passive:true});
+  row.addEventListener('touchmove',(ev)=>{
+    if(sx==null)return;
+    dx=ev.touches[0].clientX-sx;
+    const dy=Math.abs(ev.touches[0].clientY-sy);
+    if(dx>12&&dy<30)row.style.transform=`translateX(${Math.min(dx-12,72)}px)`;
+  },{passive:true});
+  row.addEventListener('touchend',()=>{
+    row.style.transform='';
+    if(sx!=null&&dx>64)tickBtn.click();
+    sx=null;
+  });
+}
+/* countdown button for timed targets like "20 sec" / "60 sec" / "20-40 min" (#59) */
+function timedControl(st,secs,label,onDone){
+  const btn=document.createElement('button');btn.className='tbtn';
+  btn.textContent=st.r?`✓ ${st.r}`:`▶ ${label}`;
+  btn.setAttribute('aria-label',`Start ${label} timer`);
+  let t=null,left=0;
+  btn.onclick=()=>{
+    if(t){clearInterval(t);t=null;btn.textContent=`▶ ${label}`;return} // tap again cancels
+    left=secs;btn.textContent=fmtClock(left);
+    t=setInterval(()=>{
+      left--;btn.textContent=fmtClock(left);
+      if(left<=0){clearInterval(t);t=null;
+        st.r=secs+'s';save();btn.textContent=`✓ ${secs}s`;
+        haptic([200,100,200]);if(S.prefs.sound)chime();
+        onDone&&onDone();
+      }
+    },1000);
+  };
+  return btn;
+}
 function setRow(cardId,e,st,si,targetReps,restSec,showRpe,nextName){
-  const row=document.createElement('div');row.className='setrow'+(showRpe?' rpe':'');
+  const secs=parseTimed(targetReps);
+  const row=document.createElement('div');row.className='setrow'+(showRpe&&!secs?' rpe':'');
   const ph=firstNum(targetReps);
   row.innerHTML=`<span class="sn">${si+1}</span>
     <button class="step" aria-label="Decrease weight">−</button>
     <input type="number" inputmode="decimal" step="any" placeholder="${esc(S.unit)}" value="${esc(st.w)}" aria-label="Set ${si+1} weight">
     <button class="step" aria-label="Increase weight">+</button>
-    <input type="number" inputmode="numeric" placeholder="${esc(targetReps||'reps')}" value="${esc(st.r)}" aria-label="Set ${si+1} reps, target ${esc(targetReps||'')}">
-    ${showRpe?`<input type="number" inputmode="decimal" step="0.5" min="5" max="10" class="rpein" placeholder="RPE" value="${esc(st.rpe??'')}" aria-label="Set ${si+1} RPE">`:''}
+    ${secs?`<span data-timer></span>`:`<input type="number" inputmode="numeric" placeholder="${esc(targetReps||'reps')}" value="${esc(st.r)}" aria-label="Set ${si+1} reps, target ${esc(targetReps||'')}">`}
+    ${showRpe&&!secs?`<input type="number" inputmode="decimal" step="0.5" min="5" max="10" class="rpein" placeholder="RPE" value="${esc(st.rpe??'')}" aria-label="Set ${si+1} RPE">`:''}
     <button class="tick ${st.done?'done':''}" aria-pressed="${st.done}" aria-label="Mark set ${si+1} of ${esc(e.name)} done">✓</button>`;
   const [minus,plus]=$$('.step',row);
-  const inputs=$$('input',row),wi=inputs[0],ri=inputs[1],rpein=showRpe?inputs[2]:null;
+  const wi=$$('input',row)[0];
+  let ri=null,rpein=null;
+  if(secs){
+    const tb=timedControl(st,secs,esc(targetReps),()=>{const tk=$('.tick',row);if(!st.done)tk.click()});
+    $('[data-timer]',row).replaceWith(tb);
+  }else{
+    ri=$$('input',row)[1];rpein=showRpe?$$('input',row)[2]:null;
+    ri.oninput=()=>{st.r=ri.value;save()};
+    if(rpein)rpein.oninput=()=>{st.rpe=rpein.value;save()};
+    ri.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();$('.tick',row).click()}});
+  }
   wi.oninput=()=>{st.w=wi.value;save()};
-  ri.oninput=()=>{st.r=ri.value;save()};
-  if(rpein)rpein.oninput=()=>{st.rpe=rpein.value;save()};
-  wi.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();ri.focus()}});
-  ri.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();$('.tick',row).click()}});
+  wi.addEventListener('keydown',ev=>{if(ev.key==='Enter'){ev.preventDefault();(ri||$('.tick',row)).focus()}});
   minus.onclick=()=>{st.w=String(Math.max(0,(+st.w||0)-plateStep()));wi.value=st.w;save()};
   plus.onclick=()=>{st.w=String((+st.w||0)+plateStep());wi.value=st.w;save()};
+  addSwipe(row,$('.tick',row));
   $('.tick',row).onclick=(ev)=>{
     st.done=!st.done;
     let pr=null;
     if(st.done){
       if(!st.w&&si>0){st.w=e.sets[si-1].w;wi.value=st.w}
-      if(!st.r&&ph!=null){st.r=String(ph);ri.value=st.r}
+      if(!st.r){
+        if(secs){st.r=secs+'s'}
+        else if(ph!=null){st.r=String(ph);if(ri)ri.value=st.r}
+      }
       haptic();
       pr=maybePR(e.slot,st.w,st.r);
     }
@@ -1021,33 +1171,45 @@ function buildSsCard(c){
   const body=document.createElement('div');
   const doneRounds=Array.from({length:it.s},(_,ri)=>subs.every(s=>s.sets[ri].done)).filter(Boolean).length;
   body.innerHTML=`<div class="ssflag">${esc(it.label)} · round ${Math.min(doneRounds+1,it.s)}/${it.s}</div>
-    ${it.items.map((sub,si)=>`<div class="sub" style="margin-top:2px"><b style="color:var(--bone)">${letters[si]}</b> — <button class="exname" style="font-size:13.5px;font-weight:500" data-si="${si}">${esc(subs[si].name)}</button> <span class="exmeta" style="display:inline">${esc(sub.r)}</span></div>`).join('')}`;
+    ${it.items.map((sub,si)=>`<div class="sub" style="margin-top:2px"><b style="color:var(--bone)">${letters[si]}</b> — <button class="exname" style="font-size:13.5px;font-weight:500" data-si="${si}">${esc(subs[si].name)}</button>${S.videos[sub.n]?` <a class="vbtn" href="${esc(S.videos[sub.n])}" target="_blank" rel="noopener" aria-label="Watch demo">▶</a>`:''} <span class="exmeta" style="display:inline">${esc(sub.r)}</span></div>`).join('')}`;
   $$('[data-si]',body).forEach(b=>b.onclick=()=>exerciseSheet(it.items[+b.dataset.si].n,subs[+b.dataset.si].name));
   for(let ri=0;ri<it.s;ri++){
     const rl=document.createElement('div');rl.className='roundlbl';rl.textContent=`ROUND ${ri+1}`;
     body.appendChild(rl);
     it.items.forEach((sub,si)=>{
       const e=subs[si],st=e.sets[ri];
+      const secs=parseTimed(sub.r);
       const row=document.createElement('div');row.className='setrow';
       const ph=firstNum(sub.r);
       row.innerHTML=`<span class="sn">${letters[si]}</span>
         <button class="step" aria-label="Decrease weight">−</button>
         <input type="number" inputmode="decimal" step="any" placeholder="${esc(S.unit)}" value="${esc(st.w)}" aria-label="${esc(e.name)} round ${ri+1} weight">
         <button class="step" aria-label="Increase weight">+</button>
-        <input type="number" inputmode="numeric" placeholder="${esc(sub.r)}" value="${esc(st.r)}" aria-label="${esc(e.name)} round ${ri+1} reps">
+        ${secs?`<span data-timer></span>`:`<input type="number" inputmode="numeric" placeholder="${esc(sub.r)}" value="${esc(st.r)}" aria-label="${esc(e.name)} round ${ri+1} reps">`}
         <button class="tick ${st.done?'done':''}" aria-pressed="${st.done}" aria-label="Mark ${esc(e.name)} round ${ri+1} done">✓</button>`;
       const [minus,plus]=$$('.step',row);
-      const [wi,rin]=$$('input',row);
+      const wi=$$('input',row)[0];
+      let rin=null;
+      if(secs){
+        const tb=timedControl(st,secs,esc(sub.r),()=>{const tk=$('.tick',row);if(!st.done)tk.click()});
+        $('[data-timer]',row).replaceWith(tb);
+      }else{
+        rin=$$('input',row)[1];
+        rin.oninput=()=>{st.r=rin.value;save()};
+      }
       wi.oninput=()=>{st.w=wi.value;save()};
-      rin.oninput=()=>{st.r=rin.value;save()};
       minus.onclick=()=>{st.w=String(Math.max(0,(+st.w||0)-plateStep()));wi.value=st.w;save()};
       plus.onclick=()=>{st.w=String((+st.w||0)+plateStep());wi.value=st.w;save()};
+      addSwipe(row,$('.tick',row));
       $('.tick',row).onclick=(ev)=>{
         st.done=!st.done;
         let pr=null;
         if(st.done){
           if(!st.w&&ri>0){st.w=e.sets[ri-1].w;wi.value=st.w}
-          if(!st.r&&ph!=null){st.r=String(ph);rin.value=st.r}
+          if(!st.r){
+            if(secs){st.r=secs+'s'}
+            else if(ph!=null){st.r=String(ph);if(rin)rin.value=st.r}
+          }
           haptic();pr=maybePR(e.slot,st.w,st.r);
         }
         ev.target.classList.toggle('done',st.done);
@@ -1101,6 +1263,9 @@ function exerciseSheet(slot,name){
   <div class="sub" style="margin-top:4px">The guide leaves variations up to you — name yours and history and 1RMs track it consistently.</div>
   <label class="f">Rest override (seconds)</label>
   <input id="exRest" type="number" inputmode="numeric" value="${esc(restO??'')}" placeholder="program default">
+  <label class="f">Demo video link</label>
+  <input id="exVideo" type="url" inputmode="url" value="${esc(S.videos[slot]||'')}" placeholder="Paste the course/YouTube URL" autocapitalize="off">
+  <div class="sub" style="margin-top:4px">Adds a ▶ button next to this exercise in every workout.</div>
   ${hist.length?`<label class="f">History — best est. 1RM per session</label>
   <div class="chart">${sparkSVG(hist.filter(h=>h.e1).map(h=>({d:new Date(h.date).toLocaleDateString(undefined,{month:'short',day:'numeric'}),y:h.e1})))}</div>
   <div style="margin-top:8px">${hist.slice(-5).reverse().map(h=>`<div class="stat"><span class="sub" style="margin:0">${new Date(h.date).toLocaleDateString()}</span>
@@ -1112,6 +1277,8 @@ function exerciseSheet(slot,name){
     if(rn)S.subs[slot]=rn;else delete S.subs[slot];
     const rv=$('#exRest').value.trim();
     if(rv&&+rv>0)S.restOverrides[slot]=+rv;else delete S.restOverrides[slot];
+    const vv=$('#exVideo').value.trim();
+    if(vv&&/^https?:\/\//i.test(vv))S.videos[slot]=vv;else if(!vv)delete S.videos[slot];
     if(S.active)Object.values(S.active.log).forEach(x=>{if(x.slot===slot)x.name=dispName(slot)});
     save();closeSheet();
     if(S.active&&cur==='train')renderSession($('#scr-train'));
@@ -1509,9 +1676,10 @@ function sessionDetailHTML(s,idx){
       </div>`).join('')}</div>`;
     }).join('')}
     ${s.notes&&Object.keys(s.notes).length?`<div class="note">${Object.values(s.notes).map(n=>esc(n)).join(' · ')}</div>`:''}
-    <div class="row" style="margin-top:10px">
+    <div class="row" style="margin-top:10px;flex-wrap:wrap">
       <button class="btn small ghost" data-edit="${idx}">Edit</button>
       <button class="btn small ghost" data-share="${idx}">Share</button>
+      <button class="btn small ghost" data-mk="${idx}">Make workout</button>
       <button class="btn small danger" data-del="${idx}">Delete</button></div>
   </details></div>`;
 }
@@ -1525,6 +1693,17 @@ function bindSessionDetail(scope){
       S.sessions.splice(idx,0,s);save();if(cur==='stats')renderStats()}});
   });
   $$('[data-edit]',scope).forEach(b=>b.onclick=()=>editSessionSheet(+b.dataset.edit));
+  $$('[data-mk]',scope).forEach(b=>b.onclick=()=>{ // turn any logged session into a custom workout (#65)
+    const s=S.sessions[+b.dataset.mk];
+    const items=Object.values(s.log).filter(x=>x.sets&&x.sets.some(t=>t.done)).map(x=>{
+      const done=x.sets.filter(t=>t.done);
+      return {n:x.name,s:done.length,r:String((done[0]&&done[0].r)||'10').replace(/^(\d+)s$/,'$1 sec'),rest:60};
+    });
+    if(!items.length){toast('Nothing was logged in that session.');return}
+    const def={id:'cw'+Date.now(),name:`${sessionDay(s).name} (mine)`,items};
+    S.custom.push(def);save();closeSheet();
+    toast(`“${def.name}” added to Train → My workouts.`,{gold:true,action:'Open',onAction:()=>go('train')});
+  });
   $$('[data-share]',scope).forEach(b=>b.onclick=()=>{
     const s=S.sessions[+b.dataset.share];
     const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
@@ -1568,13 +1747,17 @@ function renderHistory(body){
     if(wk!==lastWk){groups.push({wk,items:[]});lastWk=wk}
     groups[groups.length-1].items.push(r);
   });
-  body.innerHTML=groups.map(g=>{
+  const LIMIT=6;
+  const shown=statsState.histAll?groups:groups.slice(0,LIMIT);
+  body.innerHTML=shown.map(g=>{
     const vol=g.items.reduce((a,r)=>a+sessionVolume(r.s),0);
     return `<div class="wkhead">WEEK OF ${new Date(g.wk+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}).toUpperCase()}
       <span class="wsub">· ${g.items.length} workout${g.items.length>1?'s':''} · ${fmtVol(vol)} ${esc(S.unit)}</span></div>
     <div class="card">${g.items.map(r=>sessionDetailHTML(r.s,r.i)).join('')}</div>`;
-  }).join('');
+  }).join('')+(groups.length>LIMIT&&!statsState.histAll?
+    `<button class="btn ghost" id="histMore">Show earlier weeks (${groups.length-LIMIT} more)</button>`:'');
   bindSessionDetail(body);
+  const hm=$('#histMore');if(hm)hm.onclick=()=>{statsState.histAll=true;renderStats()};
 }
 
 /* --- lifts (1RM) --- */
@@ -1659,6 +1842,58 @@ function exHistorySheet(name){
 }
 
 /* --- trends --- */
+function muscleGroup(n){
+  n=n.toLowerCase();
+  if(/rear delt|face pull|shoulder|halo|side raise|arnold|overhead|swimmer/.test(n))return 'Shoulders';
+  if(/squat|lunge|leg finisher|stiff leg|calf|step up|quad|glute/.test(n))return 'Legs';
+  if(/tricep|pushdown|kickback|skull/.test(n))return 'Triceps';
+  if(/grip|forearm|wrist|reverse curl/.test(n))return 'Forearms';
+  if(/curl/.test(n))return 'Biceps';
+  if(/bench|chest|flye|push ?up|incline|dip/.test(n))return 'Chest';
+  if(/deadlift|row|pull ?up|pulldown|pullover|lat /.test(n))return 'Back';
+  return 'Other';
+}
+function muscleBalanceHTML(){ // done sets per muscle group, this week (#67)
+  const wk=mondayOf(new Date()),end=new Date(wk);end.setDate(end.getDate()+7);
+  const counts={};
+  S.sessions.forEach(s=>{const d=new Date(s.date);
+    if(d>=wk&&d<end)Object.values(s.log).forEach(x=>{
+      if(x.sets){const n=x.sets.filter(t=>t.done).length;
+        if(n)counts[muscleGroup(x.name)]=(counts[muscleGroup(x.name)]||0)+n}})});
+  const groups=Object.entries(counts).sort((a,b)=>b[1]-a[1]);
+  if(!groups.length)return '';
+  const max=groups[0][1];
+  return `<div class="card"><b style="font-size:14px">Sets per muscle this week</b>
+    ${groups.map(([g,n])=>`<div class="row" style="margin-top:8px">
+      <span style="width:82px;font-size:12.5px;color:var(--muted)">${esc(g)}</span>
+      <div class="grow" style="height:10px;background:var(--surface2);border-radius:5px;overflow:hidden">
+        <div style="width:${Math.round(n/max*100)}%;height:100%;background:var(--gold);border-radius:5px"></div></div>
+      <span style="font-family:var(--mono);font-size:12.5px;width:24px;text-align:right">${n}</span></div>`).join('')}
+    ${groups.length>2&&groups[groups.length-1][1]<max/4?`<div class="sub" style="margin-top:8px">${esc(groups[groups.length-1][0])} is getting a quarter of the attention of ${esc(groups[0][0])} — worth a look.</div>`:''}
+  </div>`;
+}
+function fatigueHTML(){ // avg RPE + top load, last 14 days vs the 14 before (#67)
+  const now=Date.now(),d14=14*86400000;
+  const win=(a,b)=>{const rpes=[],tops=[];
+    S.sessions.forEach(s=>{const t=new Date(s.date).getTime();
+      if(t>=a&&t<b)Object.values(s.log).forEach(x=>{
+        if(x.sets&&x.slot&&liftKeyFor(x.slot))x.sets.forEach(st=>{
+          if(st.done&&+st.w)tops.push(+st.w);
+          if(st.done&&st.rpe)rpes.push(+st.rpe)})})});
+    return {rpe:rpes.length?rpes.reduce((x,y)=>x+y)/rpes.length:null,
+      top:tops.length?Math.max(...tops):null,n:rpes.length};
+  };
+  const cur=win(now-d14,now+1),prev=win(now-2*d14,now-d14);
+  if(!cur.rpe||!prev.rpe)return '';
+  const dR=cur.rpe-prev.rpe,dW=(cur.top&&prev.top)?cur.top-prev.top:0;
+  let verdict;
+  if(dR>0.5&&dW<=0)verdict='Effort is climbing while weight isn’t — that’s fatigue talking. Guard your sleep and take the rest day seriously.';
+  else if(dR<=0&&dW>0)verdict='Heavier weights at the same or lower effort — recovery is working. Keep doing what you’re doing.';
+  else verdict='Effort and load are moving together — steady progress.';
+  return `<div class="card"><b style="font-size:14px">Fatigue check (main lifts)</b>
+    <div class="sub" style="margin-top:4px">Avg RPE ${cur.rpe.toFixed(1)} (was ${prev.rpe.toFixed(1)}) · top set ${cur.top||'—'} vs ${prev.top||'—'} ${esc(S.unit)}</div>
+    <div class="sub" style="margin-top:6px">${verdict}</div></div>`;
+}
 function renderTrends(body){
   if(!S.sessions.length){
     body.innerHTML=`<div class="card"><b style="font-size:14px">Your trends start with workout #1</b>
@@ -1682,6 +1917,10 @@ function renderTrends(body){
     <div class="tile"><div class="v">${Math.min(100,Math.round(phaseSessions/phaseTotal*100))}%</div><div class="l">Phase ${S.pos.phase} progress</div></div>
     <div class="tile"><div class="v">${S.sessions.length}</div><div class="l">All-time workouts</div></div>
   </div>
+  ${muscleBalanceHTML()}
+  ${fatigueHTML()}
+  ${S.bw.length>1?`<div class="card"><b style="font-size:14px">Bodyweight</b>
+    <div class="chart spark">${sparkSVG(S.bw.slice(-20).map(x=>({d:new Date(x.date+'T12:00').toLocaleDateString(undefined,{month:'short',day:'numeric'}),y:x.w})))}</div></div>`:''}
   <div class="card"><b style="font-size:14px">Duration</b>
     <div class="sub">Average ${Math.round(S.sessions.reduce((a,s)=>a+(s.dur||0),0)/S.sessions.length)} min per workout.</div></div>
   <button class="btn ghost" id="trShare">Share this month's report card</button>`;
@@ -1703,16 +1942,31 @@ function renderRecovery(body){
   body.innerHTML=`
   <div class="card" id="fbStats">${connected?'<div class="sub">Loading…</div>':'<div class="sub">Connect Fitbit to see steps, calories, resting HR and zone minutes next to your training.</div>'}</div>
   <button class="btn ${connected?'ghost':''}" id="fbBtn">${connected?'Refresh data':'Connect Fitbit'}</button>
-  ${connected?'<button class="btn danger" id="fbOut" style="margin-top:8px">Disconnect</button>':''}
+  ${connected?`<button class="btn ghost" id="fbWeight" style="margin-top:8px">Import bodyweight (last 30 days)</button>
+  <button class="btn danger" id="fbOut" style="margin-top:8px">Disconnect</button>`:''}
   ${!connected?`<div class="note">Setup: register a free app at dev.fitbit.com (type: <b>Personal</b>, OAuth type <b>Client</b>), set the redirect URL to
   <code>${esc(redirectUri())}</code>, then paste the Client ID in Settings → Fitbit.</div>`:''}`;
   $('#fbBtn').onclick=connected?loadFitbitStats:fitbitConnect;
   const out=$('#fbOut');if(out)out.onclick=()=>{S.fitbit.token=null;save();renderStats()};
+  const fw=$('#fbWeight');if(fw)fw.onclick=async()=>{
+    fw.disabled=true;
+    try{
+      const d=await fbFetch('/1/user/-/body/log/weight/date/today/30d.json');
+      let added=0;
+      (d.weight||[]).forEach(e=>{
+        const w=S.unit==='kg'?Math.round(e.weight*10)/10:Math.round(e.weight*2.20462*10)/10;
+        if(!S.bw.find(x=>x.date===e.date)){S.bw.push({date:e.date,w});added++}
+      });
+      S.bw.sort((a,b)=>a.date<b.date?-1:1);save();
+      toast(added?`Imported ${added} weigh-in${added>1?'s':''} from Fitbit.`:'No new weigh-ins found on Fitbit.');
+    }catch(e){toast(/40[13]/.test(e.message)?'Fitbit needs the weight permission — disconnect and reconnect to grant it.':'Weight import failed: '+e.message)}
+    fw.disabled=false;
+  };
   if(connected)loadFitbitStats();
 }
 
 /* ------------------------------ FITBIT ------------------------------ */
-const FB_SCOPES='activity heartrate profile';
+const FB_SCOPES='activity heartrate profile weight';
 function b64url(buf){return btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'')}
 async function pkce(){
   const v=b64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -2089,11 +2343,17 @@ function onboardingSheet(){
   <label class="f">Which days can you usually train?</label>
   ${[1,2,3,4,5,6,0].map(wd=>`<div class="togglerow"><div class="tl">${DOW[wd]}day</div>
     <input type="checkbox" data-obwd="${wd}" ${defaultOn.includes(wd)?'checked':''}></div>`).join('')}
+  <label class="f">Which month of the program are you in?</label>
+  <div class="pills" id="obMonth">${[1,2,3,4,5,6].map(m=>`<button class="pill ${m===1?'on':''}" data-m="${m}">M${m}</button>`).join('')}</div>
   <div class="sub" style="margin-top:8px">The 5-day routine fits best with 5 days, but the plan adapts — you can reschedule any workout later.</div>
   <button class="btn" id="obGo" style="margin-top:14px">Plan my first week</button>`,()=>{S.onboarded=true;save()});
-  $$('#sheet .pill').forEach(b=>b.onclick=()=>{
-    $$('#sheet .pill').forEach(x=>x.classList.toggle('on',x===b));
+  $$('#sheet .pill[data-u]').forEach(b=>b.onclick=()=>{
+    $$('#sheet .pill[data-u]').forEach(x=>x.classList.toggle('on',x===b));
     S.unit=b.dataset.u;save();
+  });
+  $$('#obMonth .pill').forEach(b=>b.onclick=()=>{
+    $$('#obMonth .pill').forEach(x=>x.classList.toggle('on',x===b));
+    S.pos={phase:+b.dataset.m,week:1,day:0};save();
   });
   $('#obGo').onclick=()=>{
     const days=$$('#sheet input[data-obwd]').filter(c=>c.checked).map(c=>+c.dataset.obwd);
@@ -2120,9 +2380,12 @@ function registerSW(){
       });
     });
   }).catch(()=>{});
+  // Reload only when a NEW worker replaces an old one (an update) — not on first install,
+  // where claim() also fires controllerchange and would wipe the first-run screen mid-boot.
+  const hadController=!!navigator.serviceWorker.controller;
   let reloaded=false;
   navigator.serviceWorker.addEventListener('controllerchange',()=>{
-    if(reloaded)return;reloaded=true;location.reload();
+    if(reloaded||!hadController)return;reloaded=true;location.reload();
   });
 }
 
@@ -2138,6 +2401,11 @@ function registerSW(){
   document.addEventListener('visibilitychange',onVisibility);
   registerSW();
   await handleFitbitRedirect();
-  if(S.active)go('train');else render('today');
+  const act=new URLSearchParams(location.search).get('action'); // home-screen shortcuts (#69)
+  if(act)history.replaceState({},'',redirectUri());
+  if(S.active)go('train');
+  else if(act==='start'){startSession(S.pos.phase,S.pos.day,S.pos.week);go('train')}
+  else if(act==='plan'){render('today');planWeekSheet(weekKeyOf(new Date()))}
+  else render('today');
   if(!S.onboarded&&!S.sessions.length)onboardingSheet();
 })();
