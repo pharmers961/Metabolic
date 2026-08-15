@@ -131,6 +131,44 @@ button.exname{padding:0;text-align:left;text-decoration:underline dotted var(--g
 .menu button{display:block;width:100%;text-align:left;padding:13px 16px;font-size:14px;border-bottom:1px solid var(--line)}
 .menu button:last-child{border-bottom:none}
 .menu button.dngr{color:var(--red)}
+/* commitment ring + journey */
+.ringwrap{display:flex;align-items:center;gap:14px}
+.cring{width:78px;height:78px;flex:0 0 auto}
+.cring text{font-family:var(--mono);fill:var(--bone);font-size:17px;font-weight:600}
+.journey{display:flex;gap:5px;margin-top:12px}
+.jseg{flex:1;display:flex;gap:2px;align-items:center}
+.jtick{flex:1;height:7px;border-radius:3px;background:var(--surface2);border:1px solid var(--line)}
+.jtick.done{background:var(--gold);border-color:var(--gold)}
+.jtick.half{background:var(--gold-dim);border-color:var(--gold-dim);opacity:.55}
+.jlbl{display:flex;gap:5px;margin-top:4px}
+.jlbl span{flex:1;text-align:center;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.jlbl span.cur{color:var(--gold);font-weight:600}
+/* PR / celebration overlay */
+#prOverlay{position:fixed;inset:0;z-index:80;background:rgba(9,9,7,.97);display:none;
+  align-items:center;justify-content:center;padding:24px;text-align:center}
+#prOverlay.on{display:flex}
+#prOverlay canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.prbox{position:relative;max-width:340px}
+.prbox .pre{font-size:13px;letter-spacing:.26em;text-transform:uppercase;color:var(--gold);font-weight:700}
+.prbox h2{font-size:30px;margin:10px 0 2px}
+.prbox .big{font-family:var(--disp);font-size:92px;color:var(--gold);line-height:1;letter-spacing:.01em}
+.prbox .big .u{font-size:22px;color:var(--muted);font-family:var(--body);font-weight:600}
+.prbox .beats{color:var(--muted);font-size:14px;margin-top:8px}
+.prbox .btn{margin-top:22px}
+.prbox .undo{margin-top:12px;color:var(--muted);font-size:13px;text-decoration:underline}
+/* trophies */
+.trophy{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}
+.trophy::-webkit-scrollbar{display:none}
+.tcard{flex:0 0 auto;background:var(--surface2);border:1px solid var(--gold-dim);border-radius:12px;
+  padding:10px 14px;text-align:center;min-width:96px}
+.tcard .tv{font-family:var(--mono);font-size:20px;color:var(--gold);font-weight:600}
+.tcard .tl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-top:2px}
+.tcard .td{font-size:10.5px;color:var(--muted);font-family:var(--mono);margin-top:1px}
+/* plan rows */
+.planrow{display:flex;align-items:center;gap:10px;margin-top:8px}
+.planrow .pd{width:74px;font-size:13px;color:var(--muted)}
+.planrow .pd b{color:var(--bone);display:block;font-size:14px}
+.planrow.today .pd b{color:var(--gold)}
 /* rest timer overlay */
 #restOverlay{position:fixed;inset:0;background:rgba(9,9,7,.96);display:none;z-index:50;
   flex-direction:column;align-items:center;justify-content:center;gap:20px;padding:24px}
@@ -251,6 +289,7 @@ nav button.on{color:var(--gold)}
     <div class="t"><span class="lbl" id="restLbl">Rest</span><span class="big" id="restTime">0:00</span></div>
   </div>
   <div class="nextup" id="restNext"></div>
+  <div class="nextup" id="restBeat" style="color:var(--gold)"></div>
   <div class="row">
     <button class="btn ghost" id="restMinus" aria-label="Shorten rest by 15 seconds">−15s</button>
     <button class="btn ghost" id="restPause" aria-label="Pause rest timer">Pause</button>
@@ -267,6 +306,19 @@ nav button.on{color:var(--gold)}
   <span class="tm" id="pillTime">0:00</span>
   <button id="pillOpen" class="nx" aria-label="Open rest timer"></button>
   <button id="pillSkip">Skip</button>
+</div>
+
+<!-- PR / celebration overlay -->
+<div id="prOverlay" role="dialog" aria-modal="true" aria-label="Achievement">
+  <canvas id="confettiC"></canvas>
+  <div class="prbox">
+    <div class="pre" id="prPre">NEW PR</div>
+    <h2 id="prTitle"></h2>
+    <div class="big" id="prBig"></div>
+    <div class="beats" id="prBeats"></div>
+    <button class="btn" id="prClose">Keep going</button>
+    <div><button class="undo" id="prUndo" hidden>Undo — don't save this PR</button></div>
+  </div>
 </div>
 
 <!-- Bottom sheet -->

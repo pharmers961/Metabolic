@@ -39,8 +39,9 @@ function defaults(){return{
   lifts:{}, subs:{}, restOverrides:{},
   prefs:{restAuto:true,sound:true,haptic:true,notify:false},
   schedule:{'1':0,'2':1,'3':2,'4':3,'5':4,'0':-1,'6':-1}, schedTime:'17:00',
+  plans:{}, onboarded:false,
   fitbit:{clientId:'',token:null},
-  google:{clientId:'',token:null,fileId:null,calIds:[],logWorkouts:false},
+  google:{clientId:'',token:null,fileId:null,calIds:[],planIds:{},logWorkouts:false},
   lastBackup:0
 }}
 function normalize(st){
@@ -49,8 +50,10 @@ function normalize(st){
   out.prefs=Object.assign(d.prefs,st&&st.prefs||{});
   out.schedule=Object.assign(d.schedule,st&&st.schedule||{});
   out.fitbit=Object.assign({clientId:'',token:null},st&&st.fitbit||{});
-  out.google=Object.assign({clientId:'',token:null,fileId:null,calIds:[],logWorkouts:false},st&&st.google||{});
+  out.google=Object.assign({clientId:'',token:null,fileId:null,calIds:[],planIds:{},logWorkouts:false},st&&st.google||{});
   out.lifts=st&&st.lifts||{}; out.subs=st&&st.subs||{}; out.restOverrides=st&&st.restOverrides||{};
+  out.plans=st&&st.plans||{};
+  out.onboarded=!!(st&&st.onboarded)||!!(st&&st.sessions&&st.sessions.length); // existing users skip onboarding
   (out.sessions||[]).forEach(s=>{if(!s.id)s.id=s.date});
   return out;
 }
@@ -191,15 +194,66 @@ function savePR(k,e,w,r){
   l.prs.push({date:new Date().toISOString(),e:Math.round(e),w:w??null,r:r??null});
   save();
 }
-function maybePR(slotName,w,r){
-  const k=liftKeyFor(slotName);if(!k||!(+w)||!(+r))return;
+function maybePR(slotName,w,r){ // auto-saves and returns the PR (or null) — caller shows the celebration
+  const k=liftKeyFor(slotName);if(!k||!(+w)||!(+r))return null;
   const e=epley(+w,+r), best=liftBest(k);
-  if(e<(S.unit==='kg'?20:45))return; // ignore empty-bar/warm-up weights
+  if(e<(S.unit==='kg'?20:45))return null; // ignore empty-bar/warm-up weights
   if(!best||e>best.e+0.4){
+    savePR(k,e,+w,+r);
     sessionPRs[k]=Math.round(e);
-    toast(`${LIFTS[k].label}: est. 1RM ${Math.round(e)} ${S.unit} — new best!`,{gold:true,action:'Save PR',
-      onAction:()=>{savePR(k,e,+w,+r);announce('PR saved')}});
+    return {k,e:Math.round(e),prev:best?best.e:null,prevDate:best?best.date:null};
   }
+  return null;
+}
+
+/* ---- celebration overlay (#52, #55) ---- */
+let celebThen=null,celebUndo=null;
+function celebrate(o,then){
+  celebThen=then||null;celebUndo=o.undo||null;
+  $('#prPre').textContent=o.pre;$('#prTitle').textContent=o.title;
+  $('#prBig').innerHTML=o.big;$('#prBeats').textContent=o.beats||'';
+  $('#prUndo').hidden=!o.undo;
+  $('#prOverlay').classList.add('on');
+  $('#prClose').focus();
+  announce(`${o.pre}: ${o.title} ${$('#prBig').textContent}`);
+  haptic([80,40,80,40,200]);
+  if(S.prefs.sound)chime();
+  confettiBurst();
+}
+function closeCelebrate(){
+  $('#prOverlay').classList.remove('on');
+  const t=celebThen;celebThen=null;celebUndo=null;
+  if(t)t();
+}
+function celebratePR(pr,then){
+  celebrate({pre:'NEW PR',title:LIFTS[pr.k].label,
+    big:`${pr.e} <span class="u">${esc(S.unit)}</span>`,
+    beats:pr.prev?`Beats ${pr.prev} from ${new Date(pr.prevDate).toLocaleDateString(undefined,{month:'short',day:'numeric'})} — estimated 1RM, saved to your trophy wall.`:
+      'First saved max — the baseline is set. Now beat it.',
+    undo:()=>{const prs=S.lifts[pr.k].prs;prs.pop();delete sessionPRs[pr.k];save();}},then);
+}
+function confettiBurst(){
+  if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+  const c=$('#confettiC');if(!c)return;
+  const dpr=Math.min(2,window.devicePixelRatio||1);
+  c.width=c.offsetWidth*dpr;c.height=c.offsetHeight*dpr;
+  const ctx=c.getContext('2d');
+  const colors=['#F2C230','#C9A426','#EDE8DA','#57C288'];
+  const ps=Array.from({length:70},()=>({x:c.width/2,y:c.height*.42,
+    vx:(Math.random()-.5)*14*dpr,vy:(-4-Math.random()*9)*dpr,
+    s:(3+Math.random()*5)*dpr,r:Math.random()*6.3,vr:(Math.random()-.5)*.4,
+    col:colors[Math.floor(Math.random()*colors.length)]}));
+  const t0=performance.now();
+  (function tick(t){
+    const dt=(t-t0)/1000;
+    ctx.clearRect(0,0,c.width,c.height);
+    ps.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=.45*dpr;p.r+=p.vr;
+      ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.r);ctx.fillStyle=p.col;
+      ctx.globalAlpha=Math.max(0,1-dt/1.6);
+      ctx.fillRect(-p.s/2,-p.s/2,p.s,p.s*.6);ctx.restore()});
+    if(dt<1.6&&$('#prOverlay').classList.contains('on'))requestAnimationFrame(tick);
+    else ctx.clearRect(0,0,c.width,c.height);
+  })(t0);
 }
 function suggestedLoad(entry,phase,week){
   if(!(phase.wave&&entry.wave))return null;
@@ -284,10 +338,12 @@ function clampPos(){
 }
 function advancePos(){
   const p=S.pos,phase=phaseById(p.phase);
+  const roll={week:0,phase:0};
   p.day++;
-  if(p.day>=phase.days.length){p.day=0;p.week++;
-    if(p.week>4){p.week=1;p.phase=Math.min(6,p.phase+1)}}
+  if(p.day>=phase.days.length){p.day=0;p.week++;roll.week=p.week-1;
+    if(p.week>4){p.week=1;roll.phase=p.phase;p.phase=Math.min(6,p.phase+1)}}
   save();
+  return roll;
 }
 function weekSessions(ref){ // sessions in the week of ref date, keyed by weekday
   const mon=mondayOf(ref||new Date()),end=new Date(mon);end.setDate(end.getDate()+7);
@@ -296,25 +352,186 @@ function weekSessions(ref){ // sessions in the week of ref date, keyed by weekda
     if(d>=mon&&d<end){(out[d.getDay()]=out[d.getDay()]||[]).push(i)}});
   return out;
 }
-function streakWeeks(){
-  const wks=new Set(S.sessions.map(s=>dkey(mondayOf(new Date(s.date)))));
-  let n=0,wk=mondayOf(new Date());
-  if(!wks.has(dkey(wk)))wk.setDate(wk.getDate()-7);
-  while(wks.has(dkey(wk))){n++;wk.setDate(wk.getDate()-7)}
-  return n;
+
+/* ---- weekly plans: concrete dates → program day, prefilled from the usual pattern ---- */
+const weekKeyOf=(d)=>dkey(mondayOf(d));
+function weekDates(monKey){const out=[];for(let i=0;i<7;i++){const d=new Date(monKey+'T12:00');d.setDate(d.getDate()+i);out.push(d)}return out}
+function templateFor(dateObj){const v=S.schedule[String(dateObj.getDay())];return v==null?-1:v}
+function effectiveDayFor(dateObj){ // planned program-day index for a concrete date (-1 = rest)
+  const plan=S.plans[weekKeyOf(dateObj)];
+  if(plan)return plan[dkey(dateObj)]??-1;
+  return templateFor(dateObj);
+}
+function weeklyTarget(monKey){
+  const plan=S.plans[monKey];
+  if(plan)return Math.max(1,Object.values(plan).filter(v=>v>=0).length);
+  const n=Object.values(S.schedule).filter(v=>v!=null&&v>=0).length;
+  return Math.max(1,n||5);
+}
+function weekDoneCount(monKey){
+  return S.sessions.filter(s=>weekKeyOf(new Date(s.date))===monKey).length;
+}
+function adherenceStreak(){ // consecutive weeks hitting the planned target; one light week forgiven per streak
+  let streak=0,grace=1;
+  const thisWk=weekKeyOf(new Date());
+  if(weekDoneCount(thisWk)>=weeklyTarget(thisWk))streak++;
+  let wk=mondayOf(new Date());wk.setDate(wk.getDate()-7);
+  const first=S.sessions.length?mondayOf(new Date(S.sessions[0].date)):null;
+  while(first&&wk>=first){
+    const k=dkey(wk),done=weekDoneCount(k),T=weeklyTarget(k);
+    if(done>=T)streak++;
+    else if(done>=T-1&&done>0&&grace>0){grace--;streak++}
+    else break;
+    wk.setDate(wk.getDate()-7);
+  }
+  return streak;
+}
+function streakAtRisk(){ // true when the days left this week can't cover the remaining target
+  const wk=weekKeyOf(new Date()),T=weeklyTarget(wk),done=weekDoneCount(wk);
+  if(done>=T)return false;
+  const today=new Date();today.setHours(0,0,0,0);
+  const end=mondayOf(new Date());end.setDate(end.getDate()+7);
+  const daysLeft=Math.round((end-today)/86400000); // incl. today
+  return (T-done)>=daysLeft;
+}
+function missedInfo(){ // most recent planned-but-missed date in the last 3 days
+  const today=new Date();today.setHours(0,0,0,0);
+  if(!S.sessions.length)return null;
+  const didDates=new Set(S.sessions.map(s=>dkey(new Date(s.date))));
+  for(let back=1;back<=3;back++){
+    const d=new Date(today);d.setDate(d.getDate()-back);
+    if(S.sessions.length&&d<new Date(S.sessions[0].date))break;
+    const di=effectiveDayFor(d);
+    if(di>=0&&!didDates.has(dkey(d)))return {date:d,di};
+  }
+  return null;
+}
+function ensurePlan(monKey){ // materialize a week's plan from the usual pattern so it can be edited
+  if(!S.plans[monKey]){
+    const plan={};
+    weekDates(monKey).forEach(d=>{const v=templateFor(d);if(v>=0)plan[dkey(d)]=v});
+    S.plans[monKey]=plan;
+  }
+  return S.plans[monKey];
+}
+function planWeekSheet(monKey,onDone){
+  const plan=Object.assign({},S.plans[monKey]||null);
+  const hasPlan=!!S.plans[monKey];
+  const phase=phaseById(S.pos.phase);
+  const todayK=dkey(new Date());
+  const rows=weekDates(monKey).map(d=>{
+    const k=dkey(d),v=hasPlan?(plan[k]??-1):templateFor(d);
+    return `<div class="planrow ${k===todayK?'today':''}">
+      <div class="pd"><b>${DOW[d.getDay()]}</b>${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div>
+      <select data-k="${k}" class="grow" aria-label="Workout for ${DOW[d.getDay()]}">
+        <option value="-1" ${v<0?'selected':''}>Rest</option>
+        ${phase.days.map((dd,di)=>`<option value="${di}" ${v===di?'selected':''}>Day ${di+1} — ${esc(dd.name)}</option>`).join('')}
+      </select></div>`;
+  }).join('');
+  const mon=new Date(monKey+'T12:00');
+  sheet(`<h2>Plan the week</h2>
+  <div class="sub">Week of ${mon.toLocaleDateString(undefined,{month:'long',day:'numeric'})} — pick real dates; the calendar, streak and reminders follow this plan.</div>
+  ${rows}
+  <div class="row" style="margin-top:16px"><button class="btn ghost" id="plCancel">Cancel</button>
+  <button class="btn" id="plSave">Save plan</button></div>`);
+  $('#plCancel').onclick=closeSheet;
+  $('#plSave').onclick=()=>{
+    const p={};
+    $$('#sheet select[data-k]').forEach(s=>{if(+s.value>=0)p[s.dataset.k]=+s.value});
+    S.plans[monKey]=p;save();closeSheet();
+    toast(`Week planned — ${Object.keys(p).length} workout${Object.keys(p).length===1?'':'s'}.`,{gold:true});
+    if(S.google&&S.google.token)gcalSyncPlan(monKey).catch(()=>{});
+    if(onDone)onDone();else render(cur);
+  };
+}
+function rescheduleSheet(missed){
+  const phase=phaseById(S.pos.phase);
+  const dayName=phase.days[Math.min(missed.di,phase.days.length-1)].name;
+  const didDates=new Set(S.sessions.map(s=>dkey(new Date(s.date))));
+  const today=new Date();today.setHours(0,0,0,0);
+  const opts=[];
+  for(let f=0;f<10;f++){
+    const d=new Date(today);d.setDate(d.getDate()+f);
+    const k=dkey(d),cur=effectiveDayFor(d);
+    if(didDates.has(k))continue;
+    opts.push(`<option value="${k}">${f===0?'Today':f===1?'Tomorrow':DOW[d.getDay()]} · ${d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}${cur>=0?` (replaces Day ${cur+1})`:''}</option>`);
+  }
+  sheet(`<h2>Missed: ${esc(dayName)}</h2>
+  <div class="sub">Planned for ${missed.date.toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})}. Move it — don't lose it.</div>
+  <label class="f">New date</label><select id="rsDate">${opts.join('')}</select>
+  <div class="row" style="margin-top:16px">
+    <button class="btn ghost" id="rsSkip">Skip it</button>
+    <button class="btn" id="rsMove">Reschedule</button></div>`);
+  const clearMissed=()=>{ // remove the missed entry so it stops nagging
+    const wk=weekKeyOf(missed.date);ensurePlan(wk);
+    delete S.plans[wk][dkey(missed.date)];save();
+  };
+  $('#rsSkip').onclick=()=>{clearMissed();closeSheet();render(cur);
+    toast('Skipped. The streak grace covers one light week — don’t make it two.')};
+  $('#rsMove').onclick=()=>{
+    const k=$('#rsDate').value;
+    clearMissed();
+    const wk=weekKeyOf(new Date(k+'T12:00'));ensurePlan(wk);
+    S.plans[wk][k]=missed.di;save();closeSheet();render(cur);
+    toast(`Rescheduled to ${new Date(k+'T12:00').toLocaleDateString(undefined,{weekday:'long'})}.`,{gold:true});
+    if(S.google&&S.google.token)gcalSyncPlan(wk).catch(()=>{});
+  };
+}
+
+/* ---- progress narrative ---- */
+function bestProgress(){ // biggest lift improvement since first PR
+  let best=null;
+  for(const k in S.lifts){
+    const prs=S.lifts[k].prs;
+    if(prs&&prs.length>=2){
+      const d=prs[prs.length-1].e-prs[0].e;
+      if(d>0&&(!best||d>best.delta))best={k,delta:d,from:prs[0],to:prs[prs.length-1]};
+    }
+  }
+  return best;
 }
 
 /* ------------------------------ TODAY ------------------------------ */
+function commitRingSVG(done,T){
+  const R=30,C=2*Math.PI*R,frac=Math.min(1,T?done/T:0);
+  return `<svg class="cring" viewBox="0 0 78 78" role="img" aria-label="${done} of ${T} workouts this week">
+    <circle cx="39" cy="39" r="${R}" stroke="var(--surface2)" stroke-width="7" fill="none"/>
+    <circle cx="39" cy="39" r="${R}" stroke="${frac>=1?'var(--green)':'var(--gold)'}" stroke-width="7" fill="none"
+      stroke-linecap="round" stroke-dasharray="${C}" stroke-dashoffset="${C*(1-frac)}" transform="rotate(-90 39 39)"/>
+    <text x="39" y="45" text-anchor="middle">${done}/${T}</text></svg>`;
+}
+function journeyHTML(){
+  const byPW={};
+  S.sessions.forEach(s=>{byPW[`${s.phase}-${s.week}`]=(byPW[`${s.phase}-${s.week}`]||0)+1});
+  const segs=PROGRAM.map(p=>{
+    const ticks=[1,2,3,4].map(w=>{
+      const n=byPW[`${p.id}-${w}`]||0;
+      const full=n>=3||(p.id<S.pos.phase)||(p.id===S.pos.phase&&w<S.pos.week);
+      const half=!full&&n>0;
+      return `<div class="jtick ${full?'done':half?'half':''}"></div>`;
+    }).join('');
+    return `<div class="jseg">${ticks}</div>`;
+  }).join('');
+  const lbls=PROGRAM.map(p=>`<span class="${p.id===S.pos.phase?'cur':''}">P${p.id}</span>`).join('');
+  return `<div class="journey">${segs}</div><div class="jlbl">${lbls}</div>`;
+}
 function renderToday(){
   clampPos();
-  const el=$('#scr-today'),phase=phaseById(S.pos.phase),day=phase.days[S.pos.day];
-  const wsess=weekSessions(),todayWd=new Date().getDay();
-  const wkCount=Object.values(wsess).reduce((a,x)=>a+x.length,0);
+  const el=$('#scr-today'),phase=phaseById(S.pos.phase);
+  const now=new Date(),todayWd=now.getDay(),wk=weekKeyOf(now);
+  const wsess=weekSessions();
+  const wkCount=weekDoneCount(wk);
   const wkVol=Object.values(wsess).flat().reduce((a,i)=>a+sessionVolume(S.sessions[i]),0);
-  const streak=streakWeeks();
+  const T=weeklyTarget(wk);
+  const streak=adherenceStreak();
+  const atRisk=streakAtRisk()&&wkCount>0;
   const stale=S.sessions.length>0&&(Date.now()-(S.lastBackup||0))>7*86400000&&!(S.google&&S.google.token);
-  const todayPlan=S.schedule[String(todayWd)];
-  const restToday=todayPlan===-1||todayPlan==null;
+  const planExists=!!S.plans[wk];
+  const missed=missedInfo();
+  const todayDi=effectiveDayFor(now);
+  const heroDi=todayDi>=0?todayDi:S.pos.day;
+  const heroDay=phase.days[Math.min(heroDi,phase.days.length-1)];
+  const doneToday=S.sessions.some(s=>dkey(new Date(s.date))===dkey(now));
 
   let hero;
   if(S.active){
@@ -322,45 +539,73 @@ function renderToday(){
     const mins=Math.round((Date.now()-S.active.started)/60000);
     hero=`<div class="hero"><div class="h-eyebrow">WORKOUT IN PROGRESS · ${mins} MIN</div>
       <h2>${esc(aday.name)}</h2><button class="btn" id="heroGo">Resume workout</button></div>`;
+  }else if(doneToday){
+    hero=`<div class="hero"><div class="h-eyebrow">DONE FOR TODAY ✓</div>
+      <h2>${esc(lastWorkoutName())}</h2>
+      <div class="sub" style="margin-bottom:10px">${wkCount>=T?'Week target hit — anything more is a bonus.':`${T-wkCount} more this week keeps the streak alive.`}</div>
+      <button class="btn ghost" id="heroPick">Start another anyway</button></div>`;
   }else{
-    hero=`<div class="hero"><div class="h-eyebrow">UP NEXT · PHASE ${phase.id} · WEEK ${S.pos.week} · DAY ${S.pos.day+1}</div>
-      <h2>${esc(day.name)}</h2>
-      ${restToday?`<div class="sub" style="margin-bottom:10px">Today is a scheduled rest day — start it anyway, or come back tomorrow.</div>`:''}
+    hero=`<div class="hero"><div class="h-eyebrow">${todayDi>=0?'PLANNED FOR TODAY':'UP NEXT'} · PHASE ${phase.id} · WEEK ${S.pos.week} · DAY ${heroDi+1}</div>
+      <h2>${esc(heroDay.name)}</h2>
+      ${todayDi<0?`<div class="sub" style="margin-bottom:10px">No workout planned today — bank one early and buy yourself a rest day later.</div>`:''}
       <button class="btn" id="heroGo">Start workout</button>
       <button class="btn ghost" id="heroPick" style="margin-top:8px">Pick a different day</button></div>`;
   }
 
   const strip=[1,2,3,4,5,6,0].map(wd=>{
-    const did=(wsess[wd]||[]).length>0, plan=S.schedule[String(wd)],hasPlan=plan!=null&&plan>=0;
+    const did=(wsess[wd]||[]).length>0;
+    const d=new Date(mondayOf(now));d.setDate(d.getDate()+((wd+6)%7));
+    const hasPlan=effectiveDayFor(d)>=0;
     return `<div class="wd ${wd===todayWd?'today':''}"><span class="lbl">${DOW[wd][0]}</span>
       <div class="dot ${did?'did':hasPlan?'plan':''}">${did?'✓':hasPlan?'·':''}</div></div>`;
   }).join('');
 
+  const prog=bestProgress();
+  const need=Math.max(0,T-wkCount);
   el.innerHTML=`
   <div class="pagehead"><span class="eyebrow">The Metabolic Method</span><h1>Today</h1>
-    <div class="sub">${new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})} · Month ${phase.id} of 6</div></div>
+    <div class="sub">${now.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})} · Month ${phase.id} of 6</div></div>
+  ${missed&&!S.active?`<div class="card" style="border-color:var(--red)"><div class="row">
+    <div class="grow"><b style="font-size:14px">Missed: ${esc(phase.days[Math.min(missed.di,phase.days.length-1)].name)}</b>
+    <div class="sub">Planned ${missed.date.toLocaleDateString(undefined,{weekday:'long'})}. Move it, don't lose it.</div></div>
+    <button class="btn small" id="msFix">Reschedule</button></div></div>`:''}
   ${hero}
-  <div class="statrow">
-    <div class="tile"><div class="v">${wkCount}</div><div class="l">This week</div></div>
-    <div class="tile"><div class="v">${fmtVol(wkVol)}</div><div class="l">${esc(S.unit)} volume</div></div>
-    <div class="tile"><div class="v">${streak}</div><div class="l">Week streak</div></div>
-  </div>
-  <div class="card"><div class="weekstrip">${strip}</div></div>
+  <div class="card"><div class="ringwrap">${commitRingSVG(wkCount,T)}
+    <div class="grow"><b style="font-size:15px">${wkCount>=T?'Week target hit 💪':need===1?'One more workout this week':`${need} more workouts this week`}</b>
+      <div class="sub">${atRisk?'<span style="color:var(--red)">Streak at risk — the remaining days just cover it. No skips.</span>':
+        wkCount>=T?`${fmtVol(wkVol)} ${esc(S.unit)} lifted this week.`:
+        streak>0?`Keep the ${streak}-week streak alive.`:'Hit the target and the streak starts counting.'}</div></div>
+    <div style="text-align:center;flex:0 0 auto"><div class="v" style="font-family:var(--mono);font-size:22px;color:${streak>0?'var(--gold)':'var(--muted)'}">${streak>0?'🔥'+streak:'—'}</div>
+      <div class="l" style="font-size:10.5px;color:var(--muted);text-transform:uppercase;font-weight:600">wk streak</div></div>
+  </div></div>
+  ${!planExists&&!S.active?`<div class="card" style="border-color:var(--gold-dim)"><div class="row">
+    <div class="grow"><b style="font-size:14px">This week isn't planned yet</b>
+    <div class="sub">Put your ${T} workouts on real dates — planned workouts happen, vague ones don't.</div></div>
+    <button class="btn small" id="plWeek">Plan week</button></div></div>`:''}
+  <div class="card"><div class="weekstrip">${strip}</div>
+    ${planExists?`<button class="btn small ghost" id="plEdit" style="margin-top:10px">Adjust this week's plan</button>`:''}</div>
+  ${prog?`<div class="card" style="border-color:var(--gold-dim)"><b style="font-size:14px">📈 ${esc(LIFTS[prog.k].label)} est. 1RM up ${Math.round(prog.delta)} ${esc(S.unit)}</b>
+    <div class="sub">${prog.from.e} → ${prog.to.e} since ${new Date(prog.from.date).toLocaleDateString(undefined,{month:'short',day:'numeric'})}. That's the program working — don't interrupt it.</div></div>`:
+    S.sessions.length>=2?(()=>{
+      let single=null;for(const k in S.lifts){if((S.lifts[k].prs||[]).length===1)single={k,e:S.lifts[k].prs[0].e}}
+      return `<div class="card"><b style="font-size:14px">📈 ${single?'The trend starts at your next PR':'No strength trend yet'}</b>
+      <div class="sub">${single?`${esc(LIFTS[single.k].label)} baseline is ${single.e} ${esc(S.unit)} — beat it once and this card starts charting the climb.`:
+      'Save a 1RM (Stats → Lifts) and this card starts tracking how much stronger you’re getting.'}</div></div>`})():''}
+  <div class="card"><label class="f" style="margin-top:0">The 6-month journey</label>${journeyHTML()}</div>
   ${stale?`<div class="card" style="border-color:var(--gold-dim)"><div class="row">
     <div class="grow"><b style="font-size:14px">Back up your training log</b>
     <div class="sub">Last backup ${S.lastBackup?Math.round((Date.now()-S.lastBackup)/86400000)+' days ago':'never'} — everything lives on this phone.</div></div>
-    <button class="btn small" id="bkNow">Export</button></div></div>`:''}
-  ${S.sessions.length?`<div class="card"><label class="f" style="margin-top:0">Last workout</label>${lastWorkoutHTML()}</div>`:''}`;
-  $('#heroGo').onclick=()=>{if(!S.active)startSession(S.pos.phase,S.pos.day,S.pos.week);go('train')};
+    <button class="btn small" id="bkNow">Export</button></div></div>`:''}`;
+  const hg=$('#heroGo');if(hg)hg.onclick=()=>{if(!S.active)startSession(S.pos.phase,heroDi>=0?heroDi:S.pos.day,S.pos.week);go('train')};
   const hp=$('#heroPick');if(hp)hp.onclick=()=>go('train');
   const bk=$('#bkNow');if(bk)bk.onclick=doExport;
+  const pw=$('#plWeek');if(pw)pw.onclick=()=>planWeekSheet(wk);
+  const pe=$('#plEdit');if(pe)pe.onclick=()=>planWeekSheet(wk);
+  const ms=$('#msFix');if(ms)ms.onclick=()=>rescheduleSheet(missed);
 }
-function lastWorkoutHTML(){
+function lastWorkoutName(){
   const s=S.sessions[S.sessions.length-1];if(!s)return'';
-  const phase=phaseById(s.phase),day=phase.days[s.day];
-  const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
-  return `<div style="font-size:14px">${esc(day.name)}
-    <span class="sub" style="display:inline">· ${new Date(s.date).toLocaleDateString()} · ${sets.length} sets · ${fmtVol(sessionVolume(s))} ${esc(S.unit)}</span></div>`;
+  return phaseById(s.phase).days[s.day].name;
 }
 
 /* ------------------------------ TRAIN (day picker + session) ------------------------------ */
@@ -629,21 +874,32 @@ function setRow(cardId,e,st,si,targetReps,restSec,showRpe,nextName){
   plus.onclick=()=>{st.w=String((+st.w||0)+plateStep());wi.value=st.w;save()};
   $('.tick',row).onclick=(ev)=>{
     st.done=!st.done;
+    let pr=null;
     if(st.done){
       if(!st.w&&si>0){st.w=e.sets[si-1].w;wi.value=st.w}
       if(!st.r&&ph!=null){st.r=String(ph);ri.value=st.r}
       haptic();
-      maybePR(e.slot,st.w,st.r);
+      pr=maybePR(e.slot,st.w,st.r);
     }
     ev.target.classList.toggle('done',st.done);
     ev.target.setAttribute('aria-pressed',String(st.done));
     afterChange(cardId);
     if(st.done){
-      const nx=nextName();
-      if(restSec>0)startRest(restSec,nx,{exName:e.slot});
+      const goRest=()=>{
+        const nx=nextName();
+        if(restSec>0)startRest(restSec,nx,{exName:e.slot,beat:beatLine(e,si)});
+      };
+      if(pr)celebratePR(pr,goRest);else goRest();
     }
   };
   return row;
+}
+function beatLine(e,si){ // what to chase during the rest (#56)
+  if(si+1>=e.sets.length)return '';
+  const prev=lastSets(e.name);
+  const p=prev&&prev.sets[si+1];
+  if(p&&p.w&&p.r)return `Next: set ${si+2} — beat ${p.w}×${p.r} from last time`;
+  return `Next: set ${si+2} of ${e.sets.length}`;
 }
 function nextAfter(c){ // name of what follows this card
   const order=cardOrder();
@@ -686,26 +942,31 @@ function buildSsCard(c){
       plus.onclick=()=>{st.w=String((+st.w||0)+plateStep());wi.value=st.w;save()};
       $('.tick',row).onclick=(ev)=>{
         st.done=!st.done;
+        let pr=null;
         if(st.done){
           if(!st.w&&ri>0){st.w=e.sets[ri-1].w;wi.value=st.w}
           if(!st.r&&ph!=null){st.r=String(ph);rin.value=st.r}
-          haptic();maybePR(e.slot,st.w,st.r);
+          haptic();pr=maybePR(e.slot,st.w,st.r);
         }
         ev.target.classList.toggle('done',st.done);
         ev.target.setAttribute('aria-pressed',String(st.done));
         afterChange(c.key);
         if(st.done){
-          const roundDone=subs.every(s=>s.sets[ri].done);
-          if(roundDone){
-            const last=ri===it.s-1;
-            const nx=last?nextAfter(c):`Round ${ri+2}: ${subs[0].name}`;
-            if(it.rest>0)startRest(it.rest,nx,{exName:it.items[si].n});
-            if(foldState[c.key]!=='open')rebuildCard(c.key); // refresh round counter
-          }else{
-            const restBetween=sub.rest??0;
-            const nextSub=subs.find((s,sj)=>sj!==si&&!s.sets[ri].done);
-            if(restBetween>0&&nextSub)startRest(restBetween,nextSub.name,{exName:it.items[si].n,quick:true});
-          }
+          const goRest=()=>{
+            const roundDone=subs.every(s=>s.sets[ri].done);
+            if(roundDone){
+              const last=ri===it.s-1;
+              const nx=last?nextAfter(c):`Round ${ri+2}: ${subs[0].name}`;
+              if(it.rest>0)startRest(it.rest,nx,{exName:it.items[si].n,
+                beat:last?'':`Round ${ri+2} of ${it.s} — match round ${ri+1}`});
+              if(foldState[c.key]!=='open')rebuildCard(c.key); // refresh round counter
+            }else{
+              const restBetween=sub.rest??0;
+              const nextSub=subs.find((s,sj)=>sj!==si&&!s.sets[ri].done);
+              if(restBetween>0&&nextSub)startRest(restBetween,nextSub.name,{exName:it.items[si].n,quick:true});
+            }
+          };
+          if(pr)celebratePR(pr,goRest);else goRest();
         }
       };
       body.appendChild(row);
@@ -756,30 +1017,62 @@ function exerciseSheet(slot,name){
 }
 
 /* --- finish flow --- */
+function compareToLast(a){ // this session vs the last time you did the same program day (#54)
+  const prev=[...S.sessions].reverse().find(s=>s.phase===a.phase&&s.day===a.day);
+  const vol=Object.values(a.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done)
+    .reduce((s,x)=>s+((+x.w||0)*(+x.r||0)),0);
+  const out={vol,dVol:null,beat:0,tried:0};
+  if(!prev)return out;
+  out.dVol=vol-sessionVolume(prev);
+  const prevBest={};
+  Object.values(prev.log).forEach(x=>{
+    if(x.sets){const top=Math.max(0,...x.sets.filter(t=>t.done).map(t=>+t.w||0));if(top)prevBest[x.name]=top}
+  });
+  Object.values(a.log).forEach(x=>{
+    if(x.sets&&prevBest[x.name]){
+      const top=Math.max(0,...x.sets.filter(t=>t.done).map(t=>+t.w||0));
+      if(top){out.tried++;if(top>prevBest[x.name])out.beat++}
+    }
+  });
+  return out;
+}
 function finishSheet(){
   const a=S.active;
   const c=sessionCounts();
   const anyDone=c.done>0||Object.values(a.log).some(x=>x.wu&&x.done);
-  const vol=Object.values(a.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done)
-    .reduce((s,x)=>s+((+x.w||0)*(+x.r||0)),0);
+  const cmp=compareToLast(a);
   const elapsed=Math.round((Date.now()-a.started)/60000);
   const durGuess=Math.max(1,Math.min(elapsed,240));
+  const wk=weekKeyOf(new Date()),nth=weekDoneCount(wk)+1,T=weeklyTarget(wk);
+  const phaseSessions=S.sessions.filter(s=>s.phase===a.phase).length+1;
+  const phaseTotal=phaseById(a.phase).days.filter(d=>!d.recovery).length*4;
   const prHtml=Object.keys(sessionPRs).length?
     `<div class="note" style="border:1px solid var(--gold);background:var(--surface2)">🏆 New estimated 1RM${Object.keys(sessionPRs).length>1?'s':''}: ${Object.keys(sessionPRs).map(k=>`${esc(LIFTS[k].label)} ${sessionPRs[k]} ${esc(S.unit)}`).join(' · ')}</div>`:'';
+  const winLines=[];
+  if(cmp.dVol!=null)winLines.push(cmp.dVol>=0?`+${fmtVol(cmp.dVol)} ${S.unit} vs last ${phaseById(a.phase).days[a.day].name} day`:`${fmtVol(cmp.dVol)} ${S.unit} vs last time — lighter days happen; showing up is the win`);
+  if(cmp.beat>0)winLines.push(`Beat last time on ${cmp.beat} of ${cmp.tried} exercises`);
+  winLines.push(`Workout ${nth} of ${T} this week · Phase ${a.phase} ${Math.min(100,Math.round(phaseSessions/phaseTotal*100))}% done`);
   sheet(`<h2>Finish workout</h2>
   ${anyDone?'':'<div class="note" style="border-color:var(--red)">No sets are marked done yet.</div>'}
   <div class="statrow" style="margin-top:10px">
     <div class="tile"><div class="v">${c.done}</div><div class="l">Sets</div></div>
-    <div class="tile"><div class="v">${fmtVol(vol)}</div><div class="l">${esc(S.unit)} volume</div></div>
+    <div class="tile"><div class="v">${fmtVol(cmp.vol)}</div><div class="l">${esc(S.unit)} volume</div></div>
     <div class="tile"><div class="v">${c.exDone}/${c.ex}</div><div class="l">Exercises</div></div>
   </div>
   ${prHtml}
+  <div class="note">${winLines.map(esc).join('<br>')}</div>
   <label class="f">Duration (minutes)${elapsed>240?' — timer ran long, adjust if needed':''}</label>
   <input id="durIn" type="number" inputmode="numeric" value="${durGuess}">
   <div class="row" style="margin-top:14px">
     <button class="btn ghost" id="fnBack">Keep training</button>
-    <button class="btn" id="fnSave">Save workout</button></div>`);
+    <button class="btn" id="fnSave">Save workout</button></div>
+  <button class="btn ghost" id="fnShare" style="margin-top:8px">Share a workout card</button>`);
   $('#fnBack').onclick=closeSheet;
+  $('#fnShare').onclick=()=>shareCard({
+    title:phaseById(a.phase).days[a.day].name,
+    lines:[`${c.done} sets · ${fmtVol(cmp.vol)} ${S.unit}`,
+      ...(Object.keys(sessionPRs).length?[`PR: ${Object.keys(sessionPRs).map(k=>`${LIFTS[k].label} ${sessionPRs[k]} ${S.unit}`).join(' · ')}`]:[]),
+      `Phase ${a.phase} · Week ${a.week} · workout ${nth}/${T} this week`]});
   $('#fnSave').onclick=()=>{
     const dur=Math.max(1,Math.min(600,+$('#durIn').value||durGuess));
     saveSession(dur);closeSheet();
@@ -792,13 +1085,62 @@ function saveSession(dur){
   S.sessions.push(sess);
   const prs=Object.keys(sessionPRs);
   S.active=null;stopRest();
-  if(a.phase===S.pos.phase&&a.day===S.pos.day&&a.week===S.pos.week)advancePos();else save();
+  let roll={week:0,phase:0};
+  if(a.phase===S.pos.phase&&a.day===S.pos.day&&a.week===S.pos.week)roll=advancePos();else save();
   go('today');
-  toast(prs.length?`Saved — with ${prs.length} PR${prs.length>1?'s':''}! 🏆`:'Workout saved.',{gold:prs.length>0});
+  if(roll.phase){
+    celebrate({pre:'PHASE COMPLETE',title:`Phase ${roll.phase} is done`,
+      big:`${roll.phase}<span class="u"> / 6</span>`,
+      beats:roll.phase<6?`A month of work banked. ${phaseById(roll.phase+1).name.replace(/^Phase \d+ — /,'')} starts next — new stimulus, same habit.`:
+        'Six months. The whole program. You are a different lifter than the one who started.'});
+  }else if(roll.week){
+    const p=phaseById(S.pos.phase);
+    toast(`Week ${roll.week} complete${p.wave?` — the wave moves to ${WAVE[S.pos.week-1].s}×${WAVE[S.pos.week-1].r}`:''}. 💪`,{gold:true,ms:7000});
+  }else{
+    toast(prs.length?`Saved — with ${prs.length} PR${prs.length>1?'s':''}! 🏆`:'Workout saved.',{gold:prs.length>0});
+  }
   if(S.google&&S.google.token){
     driveBackup(true).catch(()=>toast('Auto-backup needs Google re-connect (Settings).'));
     if(S.google.logWorkouts)gcalLogDone(sess).catch(()=>{});
   }
+}
+
+/* ---- share card (#58) ---- */
+async function shareCard(o){
+  const W=1080,H=1350;
+  const c=document.createElement('canvas');c.width=W;c.height=H;
+  const x=c.getContext('2d');
+  try{await document.fonts.load('80px Anton');await document.fonts.load('600 44px "IBM Plex Mono"')}catch(e){}
+  x.fillStyle='#0C0C0A';x.fillRect(0,0,W,H);
+  x.strokeStyle='#2B2919';x.lineWidth=2;x.strokeRect(40,40,W-80,H-80);
+  x.fillStyle='#F2C230';x.font='600 34px "IBM Plex Mono", monospace';x.textAlign='left';
+  x.fillText('THE METABOLIC METHOD',80,150);
+  x.fillStyle='#EDE8DA';x.font='110px Anton, sans-serif';
+  const words=(o.title||'').toUpperCase().split(' ');
+  let line='',ly=290;
+  words.forEach(w=>{
+    if(x.measureText(line+' '+w).width>W-160&&line){x.fillText(line,80,ly);ly+=118;line=w}
+    else line=line?line+' '+w:w;
+  });
+  x.fillText(line,80,ly);ly+=80;
+  x.fillStyle='#9A9480';x.font='600 40px "IBM Plex Mono", monospace';
+  x.fillText(new Date().toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}),80,ly);ly+=110;
+  x.strokeStyle='#F2C230';x.lineWidth=6;x.beginPath();x.moveTo(80,ly-40);x.lineTo(320,ly-40);x.stroke();
+  (o.lines||[]).forEach(l=>{
+    x.fillStyle='#EDE8DA';x.font='600 52px "IBM Plex Mono", monospace';
+    x.fillText(l,80,ly+40);ly+=110;
+  });
+  const streak=adherenceStreak();
+  if(streak>0){x.fillStyle='#F2C230';x.font='600 44px "IBM Plex Mono", monospace';
+    x.fillText(`🔥 ${streak}-week streak`,80,H-140)}
+  x.fillStyle='#9A9480';x.font='600 30px "IBM Plex Mono", monospace';
+  x.fillText('MM TRACKER',W-300,H-140);
+  const blob=await new Promise(r=>c.toBlob(r,'image/png'));
+  const file=new File([blob],'workout.png',{type:'image/png'});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){
+    try{await navigator.share({files:[file],title:'Workout'});return}catch(e){}
+  }
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='workout.png';a.click();
 }
 
 /* ------------------------------ REST TIMER ------------------------------ */
@@ -812,12 +1154,13 @@ function startRest(sec,nextName,opts={}){
   const dur=S.restOverrides[opts.exName]??sec;
   if(!dur||dur<=0)return;
   clearInterval(restT);clearTimeout(miniT);
-  rest={end:Date.now()+dur*1000,total:dur,next:nextName||'',paused:false,quick:!!opts.quick||dur<=15};
+  rest={end:Date.now()+dur*1000,total:dur,next:nextName||'',beat:opts.beat||'',paused:false,quick:!!opts.quick||dur<=15};
   if(rest.quick){showPill()}
   else{
     $('#restOverlay').classList.add('on');
     $('#restPill').classList.remove('on');
     $('#restNext').innerHTML=`then <b>${esc(rest.next)}</b>`;
+    $('#restBeat').textContent=rest.beat;
     $('#restPause').textContent='Pause';
     miniT=setTimeout(()=>{if(rest&&!rest.paused)showPill()},6000);
   }
@@ -847,6 +1190,7 @@ function showOverlay(){
   $('#restPill').classList.remove('on');
   $('#restOverlay').classList.add('on');
   $('#restNext').innerHTML=`then <b>${esc(rest.next)}</b>`;
+  $('#restBeat').textContent=rest.beat||'';
 }
 function stopRest(){clearInterval(restT);clearTimeout(miniT);rest=null;
   $('#restOverlay').classList.remove('on');$('#restPill').classList.remove('on')}
@@ -883,6 +1227,8 @@ function bindRest(){
   $('#pillSkip').onclick=()=>endRest(false);
   $('#restMini').onclick=showPill;
   $('#pillOpen').onclick=showOverlay;
+  $('#prClose').onclick=closeCelebrate;
+  $('#prUndo').onclick=()=>{if(celebUndo)celebUndo();closeCelebrate();toast('PR removed.')};
   // focus trap in overlay
   $('#restOverlay').addEventListener('keydown',(ev)=>{
     if(ev.key==='Escape'){showPill();return}
@@ -1002,12 +1348,12 @@ function renderCalendar(body){
   let cells='';
   for(let i=0;i<startPad;i++)cells+='<div></div>';
   for(let d=1;d<=daysIn;d++){
-    const dt=new Date(y,mo,d),k=dkey(dt),did=byDay[k],wd=dt.getDay();
-    const plan=S.schedule[String(wd)],hasPlan=plan!=null&&plan>=0;
+    const dt=new Date(y,mo,d),k=dkey(dt),did=byDay[k];
+    const di=effectiveDayFor(dt),hasPlan=di>=0;
     const past=dt<new Date(new Date().setHours(0,0,0,0));
     const missed=past&&hasPlan&&!did&&firstLogged&&dt>firstLogged;
     cells+=`<button class="calcell inmonth ${did?'did':''} ${k===today?'today':''} ${!did&&hasPlan&&!past?'plan':''} ${missed?'missed':''}"
-      data-k="${k}" aria-label="${dt.toDateString()}${did?', workout logged':''}">${d}</button>`;
+      data-k="${k}" data-past="${past?1:0}" aria-label="${dt.toDateString()}${did?', workout logged':hasPlan?`, planned Day ${di+1}`:''}">${d}</button>`;
   }
   const monthSessions=Object.keys(byDay).filter(k=>k.startsWith(`${y}-${String(mo+1).padStart(2,'0')}`));
   const monthVol=monthSessions.flatMap(k=>byDay[k]).reduce((a,i)=>a+sessionVolume(S.sessions[i]),0);
@@ -1019,22 +1365,26 @@ function renderCalendar(body){
       <span class="m">${m.toLocaleDateString(undefined,{month:'long',year:'numeric'})}</span>
       <button id="calNext" aria-label="Next month">→</button></div>
     <div class="calgrid">${['M','T','W','T','F','S','S'].map(d=>`<div class="dow">${d}</div>`).join('')}${cells}</div>
-    <div class="sub" style="margin-top:10px">● gold = trained · dot = scheduled · red = scheduled but missed</div>
+    <div class="sub" style="margin-top:10px">● gold = trained · dot = planned · red = planned but missed. Tap a future day to adjust that week's plan.</div>
   </div>
   <div class="statrow">
     <div class="tile"><div class="v">${monthSessions.flatMap(k=>byDay[k]).length}</div><div class="l">Workouts</div></div>
     <div class="tile"><div class="v">${fmtVol(monthVol)}</div><div class="l">${esc(S.unit)} volume</div></div>
-    <div class="tile"><div class="v">${streakWeeks()}</div><div class="l">Week streak</div></div>
+    <div class="tile"><div class="v">${adherenceStreak()}</div><div class="l">Week streak</div></div>
   </div>`;
   $('#calPrev').onclick=()=>{statsState.month=new Date(y,mo-1,1);renderStats()};
   $('#calNext').onclick=()=>{statsState.month=new Date(y,mo+1,1);renderStats()};
-  $$('.calcell.did',body).forEach(b=>b.onclick=()=>{
+  $$('.calcell',body).forEach(b=>b.onclick=()=>{
     const idxs=byDay[b.dataset.k];
-    sheet(`<h2>${new Date(b.dataset.k+'T12:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})}</h2>
-      ${idxs.map(i=>sessionDetailHTML(S.sessions[i],i)).join('')}
-      <button class="btn ghost" id="shClose" style="margin-top:12px">Close</button>`);
-    bindSessionDetail();
-    $('#shClose').onclick=closeSheet;
+    if(idxs){ // day with logged workouts → open them
+      sheet(`<h2>${new Date(b.dataset.k+'T12:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'})}</h2>
+        ${idxs.map(i=>sessionDetailHTML(S.sessions[i],i)).join('')}
+        <button class="btn ghost" id="shClose" style="margin-top:12px">Close</button>`);
+      bindSessionDetail();
+      $('#shClose').onclick=closeSheet;
+    }else if(b.dataset.past!=='1'){ // future/today → plan that week
+      planWeekSheet(weekKeyOf(new Date(b.dataset.k+'T12:00')),()=>renderStats());
+    }
   });
 }
 
@@ -1053,6 +1403,7 @@ function sessionDetailHTML(s,idx){
     ${s.notes&&Object.keys(s.notes).length?`<div class="note">${Object.values(s.notes).map(n=>esc(n)).join(' · ')}</div>`:''}
     <div class="row" style="margin-top:10px">
       <button class="btn small ghost" data-edit="${idx}">Edit</button>
+      <button class="btn small ghost" data-share="${idx}">Share</button>
       <button class="btn small danger" data-del="${idx}">Delete</button></div>
   </details></div>`;
 }
@@ -1066,6 +1417,13 @@ function bindSessionDetail(scope){
       S.sessions.splice(idx,0,s);save();if(cur==='stats')renderStats()}});
   });
   $$('[data-edit]',scope).forEach(b=>b.onclick=()=>editSessionSheet(+b.dataset.edit));
+  $$('[data-share]',scope).forEach(b=>b.onclick=()=>{
+    const s=S.sessions[+b.dataset.share],day=phaseById(s.phase).days[s.day];
+    const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
+    shareCard({title:day.name,lines:[`${sets.length} sets · ${fmtVol(sessionVolume(s))} ${S.unit}`,
+      `${s.dur} min · Phase ${s.phase} · Week ${s.week}`,
+      new Date(s.date).toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})]});
+  });
 }
 function editSessionSheet(idx){
   const s=S.sessions[idx];
@@ -1114,8 +1472,19 @@ function renderHistory(body){
 /* --- lifts (1RM) --- */
 function renderLifts(body){
   const wave=WAVE[Math.min(S.pos.week,4)-1];
-  body.innerHTML=`<div class="note">Estimated 1RMs power the suggested loads in strength phases (3–5).
-    This week's wave: <b>${wave.s}×${wave.r} @ ~${Math.round(wave.pct*100)}%</b> of 1RM. The app also spots new PRs automatically when you log a heavy set.</div>
+  const allPRs=[];
+  for(const k in S.lifts)(S.lifts[k].prs||[]).forEach(p=>allPRs.push({k,...p}));
+  allPRs.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const trophies=allPRs.slice(0,8).map(p=>`<div class="tcard"><div class="tv">${p.e}</div>
+    <div class="tl">${esc(LIFTS[p.k].label)}</div>
+    <div class="td">${new Date(p.date).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</div></div>`).join('');
+  body.innerHTML=`${allPRs.length?`<div class="card" style="border-color:var(--gold-dim)">
+    <label class="f" style="margin-top:0">🏆 Trophy wall — ${allPRs.length} PR${allPRs.length>1?'s':''}</label>
+    <div class="trophy">${trophies}</div></div>`:
+    `<div class="card" style="border-color:var(--gold-dim)"><b style="font-size:14px">🏆 Your trophy wall is empty</b>
+    <div class="sub">Save one 1RM below and every strength workout auto-fills your working weights — and every heavy set becomes a chance to put a number on this wall.</div></div>`}
+  <div class="note">Estimated 1RMs power the suggested loads in strength phases (3–5).
+    This week's wave: <b>${wave.s}×${wave.r} @ ~${Math.round(wave.pct*100)}%</b> of 1RM. The app spots new PRs automatically when you log a heavy set.</div>
   ${Object.keys(LIFTS).map(k=>{
     const best=liftBest(k),l=S.lifts[k];
     const pts=(l?l.prs:[]).map(p=>({d:new Date(p.date).toLocaleDateString(undefined,{month:'short',day:'numeric'}),y:p.e}));
@@ -1184,7 +1553,10 @@ function exHistorySheet(name){
 /* --- trends --- */
 function renderTrends(body){
   if(!S.sessions.length){
-    body.innerHTML=`<div class="card"><div class="sub">Trends appear after your first logged workouts.</div></div>`;return}
+    body.innerHTML=`<div class="card"><b style="font-size:14px">Your trends start with workout #1</b>
+      <div class="sub">Weekly volume, adherence vs plan, and phase progress all appear here — one logged session is enough to draw the first bar.</div>
+      <button class="btn" style="margin-top:12px" id="trGo">Start today's workout</button></div>`;
+    $('#trGo').onclick=()=>go('today');return}
   const weeks=[];const now=mondayOf(new Date());
   for(let i=7;i>=0;i--){const wk=new Date(now);wk.setDate(wk.getDate()-7*i);weeks.push({key:dkey(wk),label:wk.toLocaleDateString(undefined,{month:'numeric',day:'numeric'}),v:0,n:0})}
   S.sessions.forEach(s=>{
@@ -1203,7 +1575,18 @@ function renderTrends(body){
     <div class="tile"><div class="v">${S.sessions.length}</div><div class="l">All-time workouts</div></div>
   </div>
   <div class="card"><b style="font-size:14px">Duration</b>
-    <div class="sub">Average ${Math.round(S.sessions.reduce((a,s)=>a+(s.dur||0),0)/S.sessions.length)} min per workout.</div></div>`;
+    <div class="sub">Average ${Math.round(S.sessions.reduce((a,s)=>a+(s.dur||0),0)/S.sessions.length)} min per workout.</div></div>
+  <button class="btn ghost" id="trShare">Share this month's report card</button>`;
+  $('#trShare').onclick=()=>{
+    const now=new Date(),mk=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const monthSess=S.sessions.filter(s=>dkey(new Date(s.date)).startsWith(mk));
+    const mVol=monthSess.reduce((a,s)=>a+sessionVolume(s),0);
+    const mPRs=[];for(const k in S.lifts)(S.lifts[k].prs||[]).forEach(p=>{if(p.date.startsWith(mk))mPRs.push(`${LIFTS[k].label} ${p.e}`)});
+    shareCard({title:now.toLocaleDateString(undefined,{month:'long'})+' report',
+      lines:[`${monthSess.length} workouts · ${fmtVol(mVol)} ${S.unit} lifted`,
+        ...(mPRs.length?[`PRs: ${mPRs.join(' · ')}`]:[]),
+        `Phase ${S.pos.phase} of 6 · Week ${S.pos.week}`]});
+  };
 }
 
 /* --- recovery (Fitbit) --- */
@@ -1427,6 +1810,31 @@ async function gcalSyncSchedule(){
   }
   save();
 }
+async function gcalSyncPlan(monKey){ // one-off events for a specific week's plan
+  const plan=S.plans[monKey];if(!plan)return;
+  for(const id of (S.google.planIds[monKey]||[])){
+    try{await gFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events/${id}`,{method:'DELETE'},true)}catch(e){}
+  }
+  const ids=[];
+  const phase=phaseById(S.pos.phase);
+  const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const [h,m]=(S.schedTime||'17:00').split(':').map(Number);
+  for(const k in plan){
+    const di=plan[k];if(di<0)continue;
+    const st=new Date(k+'T12:00');st.setHours(h,m,0,0);
+    if(st<new Date())continue; // don't create events in the past
+    const en=new Date(st.getTime()+75*60000);
+    const day=phase.days[Math.min(di,phase.days.length-1)];
+    const ev=await gFetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({summary:`Workout — Day ${di+1}: ${day.name}`,
+        description:'The Metabolic Method — planned in the MM Tracker app.',
+        start:{dateTime:st.toISOString(),timeZone:tz},end:{dateTime:en.toISOString(),timeZone:tz},
+        reminders:{useDefault:false,overrides:[{method:'popup',minutes:60}]}})},true);
+    ids.push(ev.id);
+  }
+  S.google.planIds[monKey]=ids;save();
+}
 async function gcalLogDone(sess){
   const phase=phaseById(sess.phase),day=phase.days[sess.day];
   const en=new Date(sess.date),st=new Date(en.getTime()-(sess.dur||60)*60000);
@@ -1460,8 +1868,8 @@ function renderSettings(){
   </div>
 
   <div class="card">
-    <label class="f" style="margin-top:0">Training schedule</label>
-    <div class="sub">Which program day falls on which weekday — powers the calendar, the Today screen and calendar sync.</div>
+    <label class="f" style="margin-top:0">Usual training pattern</label>
+    <div class="sub">Your default week — each real week is planned from this (Today → "Plan week"), and any workout can be rescheduled to a different date without changing the pattern.</div>
     ${[1,2,3,4,5,6,0].map(wd=>`<div class="row" style="margin-top:8px">
       <span style="width:44px;font-size:13px;color:var(--muted)">${DOW[wd]}</span>
       <select data-wd="${wd}" class="grow">
@@ -1563,6 +1971,34 @@ function renderSettings(){
   },true);
 }
 
+/* ------------------------------ onboarding (#57) ------------------------------ */
+function onboardingSheet(){
+  const defaultOn=[1,2,3,4,5];
+  sheet(`<h2>Let's set you up</h2>
+  <div class="sub">Two questions, then the app plans your first week.</div>
+  <label class="f">Weights in</label>
+  <div class="pills"><button class="pill on" data-u="lb">Pounds (lb)</button><button class="pill" data-u="kg">Kilograms (kg)</button></div>
+  <label class="f">Which days can you usually train?</label>
+  ${[1,2,3,4,5,6,0].map(wd=>`<div class="togglerow"><div class="tl">${DOW[wd]}day</div>
+    <input type="checkbox" data-obwd="${wd}" ${defaultOn.includes(wd)?'checked':''}></div>`).join('')}
+  <div class="sub" style="margin-top:8px">The 5-day routine fits best with 5 days, but the plan adapts — you can reschedule any workout later.</div>
+  <button class="btn" id="obGo" style="margin-top:14px">Plan my first week</button>`,()=>{S.onboarded=true;save()});
+  $$('#sheet .pill').forEach(b=>b.onclick=()=>{
+    $$('#sheet .pill').forEach(x=>x.classList.toggle('on',x===b));
+    S.unit=b.dataset.u;save();
+  });
+  $('#obGo').onclick=()=>{
+    const days=$$('#sheet input[data-obwd]').filter(c=>c.checked).map(c=>+c.dataset.obwd);
+    const sched={};[0,1,2,3,4,5,6].forEach(wd=>sched[String(wd)]=-1);
+    days.slice(0,5).forEach((wd,i)=>sched[String(wd)]=i);
+    S.schedule=sched;S.onboarded=true;save();
+    closeSheet();
+    ensurePlan(weekKeyOf(new Date()));save();
+    renderToday();
+    toast(`Set — ${Math.min(5,days.length)} training days a week. First up: Day 1.`,{gold:true});
+  };
+}
+
 /* ------------------------------ service worker / boot ------------------------------ */
 function registerSW(){
   if(!('serviceWorker' in navigator))return;
@@ -1595,4 +2031,5 @@ function registerSW(){
   registerSW();
   await handleFitbitRedirect();
   if(S.active)go('train');else render('today');
+  if(!S.onboarded&&!S.sessions.length)onboardingSheet();
 })();
