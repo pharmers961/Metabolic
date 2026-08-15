@@ -53,6 +53,7 @@ function normalize(st){
   out.google=Object.assign({clientId:'',token:null,fileId:null,calIds:[],planIds:{},logWorkouts:false},st&&st.google||{});
   out.lifts=st&&st.lifts||{}; out.subs=st&&st.subs||{}; out.restOverrides=st&&st.restOverrides||{};
   out.plans=st&&st.plans||{};
+  out.custom=st&&st.custom||JSON.parse(JSON.stringify(CUSTOM_SEED));
   out.onboarded=!!(st&&st.onboarded)||!!(st&&st.sessions&&st.sessions.length); // existing users skip onboarding
   (out.sessions||[]).forEach(s=>{if(!s.id)s.id=s.date});
   return out;
@@ -145,9 +146,23 @@ function toast(msg,opts={}){
 /* ------------------------------ program helpers ------------------------------ */
 function target(entry,phase,week){
   let s=entry.s,r=entry.r;
-  if(phase.weekly&&entry.wk){const w=entry.wk[Math.min(week,4)-1];s=w[0];r=w[1]}
-  if(phase.wave&&entry.wave){const w=WAVE[Math.min(week,4)-1];s=w.s;r=w.r}
+  if(phase&&phase.weekly&&entry.wk){const w=entry.wk[Math.min(week,4)-1];s=w[0];r=w[1]}
+  if(phase&&phase.wave&&entry.wave){const w=WAVE[Math.min(week,4)-1];s=w.s;r=w.r}
   return {s,r};
+}
+/* ---- custom workouts ---- */
+function customById(id){return (S.custom||[]).find(c=>c.id===id)}
+function sessionDay(s){ // works for program AND custom sessions
+  if(s.customId){const c=customById(s.customId);
+    return {name:s.name||(c?c.name:'Custom workout'),items:c?c.items:[]}}
+  return phaseById(s.phase).days[s.day];
+}
+function sessionLabel(s){
+  return s.customId?(s.name||'Custom workout'):`Phase ${s.phase} · ${sessionDay(s).name}`;
+}
+function activeDay(){
+  return S.active.customId?{name:S.active.name,items:(customById(S.active.customId)||{items:[]}).items}
+    :phaseById(S.active.phase).days[S.active.day];
 }
 function perSetTargets(reps,n){ // '12/10/8' -> per-set; otherwise same target each set
   const parts=String(reps??'').split('/');
@@ -322,7 +337,7 @@ function renderBanner(){
   const showing=S.active&&!(cur==='train');
   b.classList.toggle('on',!!showing);
   if(showing){
-    const phase=phaseById(S.active.phase),day=phase.days[S.active.day];
+    const day=activeDay();
     const mins=Math.round((Date.now()-S.active.started)/60000);
     b.innerHTML=`<div class="row"><div class="grow" style="font-size:13.5px"><b>Workout in progress</b>
       <span class="sub" style="display:inline">· ${esc(day.name)} · ${mins} min</span></div>
@@ -535,7 +550,7 @@ function renderToday(){
 
   let hero;
   if(S.active){
-    const aphase=phaseById(S.active.phase),aday=aphase.days[S.active.day];
+    const aday=activeDay();
     const mins=Math.round((Date.now()-S.active.started)/60000);
     hero=`<div class="hero"><div class="h-eyebrow">WORKOUT IN PROGRESS · ${mins} MIN</div>
       <h2>${esc(aday.name)}</h2><button class="btn" id="heroGo">Resume workout</button></div>`;
@@ -605,7 +620,7 @@ function renderToday(){
 }
 function lastWorkoutName(){
   const s=S.sessions[S.sessions.length-1];if(!s)return'';
-  return phaseById(s.phase).days[s.day].name;
+  return sessionDay(s).name;
 }
 
 /* ------------------------------ TRAIN (day picker + session) ------------------------------ */
@@ -638,10 +653,77 @@ function renderTrain(){
       <div class="dnum">DAY ${i+1}${d.recovery?' · RECOVERY':''}</div><div class="dname">${esc(d.name)}</div>
       <div class="dmeta">${d.items.filter(x=>x.t!=='wu').length} movements · ${d.items.filter(x=>x.t==='wu').length} warm-ups</div>
     </button>`}).join('')}
-  </div>`;
+  </div>
+  <label class="f" style="margin-top:18px">My workouts</label>
+  <div class="sub" style="margin-bottom:8px">Your own sessions, outside the program — history and last-time weights track them the same way.</div>
+  ${(S.custom||[]).map(c=>{
+    const last=[...S.sessions].reverse().find(s=>s.customId===c.id);
+    return `<div class="daycard" style="cursor:default"><div class="row">
+      <button class="grow" data-cw="${esc(c.id)}" style="text-align:left;padding:0">
+        <div class="dnum">CUSTOM</div><div class="dname">${esc(c.name)}</div>
+        <div class="dmeta">${c.items.length} exercises${last?` · last done ${new Date(last.date).toLocaleDateString(undefined,{month:'short',day:'numeric'})}`:' · never done yet'}</div>
+      </button>
+      <button class="btn small ghost" data-cedit="${esc(c.id)}">Edit</button></div></div>`;
+  }).join('')}
+  <button class="btn ghost" id="newCustom">+ New custom workout</button>`;
   $$('#phasePills .pill',el).forEach(b=>b.onclick=()=>{S.pos.phase=+b.dataset.p;clampPos();save();renderTrain()});
   $$('#weekPills .pill',el).forEach(b=>b.onclick=()=>{S.pos.week=+b.dataset.w;save();renderTrain()});
-  $$('.daycard',el).forEach(b=>b.onclick=()=>{startSession(S.pos.phase,+b.dataset.d,S.pos.week);renderTrain()});
+  $$('.daycard[data-d]',el).forEach(b=>b.onclick=()=>{startSession(S.pos.phase,+b.dataset.d,S.pos.week);renderTrain()});
+  $$('[data-cw]',el).forEach(b=>b.onclick=()=>{startCustomSession(b.dataset.cw);renderTrain()});
+  $$('[data-cedit]',el).forEach(b=>b.onclick=()=>customEditorSheet(b.dataset.cedit));
+  $('#newCustom').onclick=()=>customEditorSheet(null);
+}
+
+/* --- custom workout editor --- */
+function customEditorSheet(id){
+  const src=id?customById(id):null;
+  const draft=src?JSON.parse(JSON.stringify(src)):{id:null,name:'',items:[{n:'',s:3,r:'12',rest:60}]};
+  function draw(){
+    sheet(`<h2>${src?'Edit workout':'New workout'}</h2>
+    <label class="f">Workout name</label>
+    <input id="cwName" value="${esc(draft.name)}" placeholder="e.g. Arm Blaster">
+    <label class="f">Exercises</label>
+    ${draft.items.map((it,i)=>`<div class="card" style="padding:10px;margin-bottom:8px">
+      <div class="row"><input data-f="n" data-i="${i}" value="${esc(it.n)}" placeholder="Exercise name" class="grow">
+        <button class="btn small danger" data-rm="${i}" aria-label="Remove exercise">✕</button></div>
+      <div class="row" style="margin-top:8px">
+        <div class="grow"><label class="f" style="margin:0 0 4px">Sets</label>
+          <input data-f="s" data-i="${i}" type="number" inputmode="numeric" min="1" max="10" value="${esc(it.s)}"></div>
+        <div class="grow"><label class="f" style="margin:0 0 4px">Reps</label>
+          <input data-f="r" data-i="${i}" value="${esc(it.r)}" placeholder="12-15"></div>
+        <div class="grow"><label class="f" style="margin:0 0 4px">Rest (sec)</label>
+          <input data-f="rest" data-i="${i}" type="number" inputmode="numeric" value="${esc(it.rest)}"></div>
+      </div></div>`).join('')}
+    <button class="btn small ghost" id="cwAdd">+ Add exercise</button>
+    <div class="row" style="margin-top:16px">
+      <button class="btn ghost" id="cwCancel">Cancel</button>
+      <button class="btn" id="cwSave">Save workout</button></div>
+    ${src?'<button class="btn danger" id="cwDel" style="margin-top:8px">Delete this workout…</button>':''}`);
+    $$('#sheet input[data-f]').forEach(inp=>inp.oninput=()=>{
+      const it=draft.items[+inp.dataset.i];
+      it[inp.dataset.f]=inp.dataset.f==='n'||inp.dataset.f==='r'?inp.value:(+inp.value||0);
+    });
+    $('#cwName').oninput=(e)=>{draft.name=e.target.value};
+    $$('#sheet [data-rm]').forEach(b=>b.onclick=()=>{draft.items.splice(+b.dataset.rm,1);draw()});
+    $('#cwAdd').onclick=()=>{draft.items.push({n:'',s:3,r:'12',rest:60});draw()};
+    $('#cwCancel').onclick=closeSheet;
+    $('#cwSave').onclick=()=>{
+      draft.name=draft.name.trim();
+      draft.items=draft.items.filter(it=>it.n.trim()).map(it=>({n:it.n.trim(),s:Math.max(1,+it.s||1),r:String(it.r||'').trim()||'10',rest:Math.max(0,+it.rest||0)}));
+      if(!draft.name){toast('Give the workout a name.');return}
+      if(!draft.items.length){toast('Add at least one exercise.');return}
+      if(!draft.id)draft.id='cw'+Date.now();
+      const i=(S.custom||[]).findIndex(c=>c.id===draft.id);
+      if(i>=0)S.custom[i]=draft;else S.custom.push(draft);
+      save();closeSheet();renderTrain();
+      toast(`Saved “${draft.name}” — it's in Train → My workouts.`,{gold:true});
+    };
+    const del=$('#cwDel');if(del)del.onclick=()=>confirmSheet(`Delete “${draft.name}”?`,
+      'The workout definition is removed. Sessions you already logged with it stay in your history.','Delete',()=>{
+        S.custom=S.custom.filter(c=>c.id!==draft.id);save();renderTrain();
+      },true);
+  }
+  draw();
 }
 
 const entryKey=(di,ii)=>`d${di}i${ii}`;
@@ -675,6 +757,22 @@ function startSession(phaseId,dayIdx,week){
   sessionPRs={};foldState={};
   save();acquireWakeLock();
 }
+function startCustomSession(id){
+  const c=customById(id);if(!c)return;
+  const log={};
+  c.items.forEach((it,ii)=>{
+    const key='c'+ii;
+    const prev=lastSets(dispName(it.n));
+    log[key]={name:dispName(it.n),slot:it.n,
+      sets:Array.from({length:it.s},(_,si)=>{
+        const pw=prev&&(prev.sets[si]||prev.sets[prev.sets.length-1]);
+        return {w:pw&&pw.w?pw.w:'',r:'',done:false};
+      })};
+  });
+  S.active={customId:id,name:c.name,week:S.pos.week,started:Date.now(),log,notes:{}};
+  sessionPRs={};foldState={};
+  save();acquireWakeLock();
+}
 
 function sessionCounts(){
   const log=S.active.log;
@@ -685,6 +783,10 @@ function sessionCounts(){
   return {sets:allSets.length,done,ex:exKeys.length,exDone};
 }
 function cardOrder(){ // descriptors for the active day
+  if(S.active.customId){
+    const c=customById(S.active.customId);
+    return (c?c.items:[]).map((it,ii)=>({id:'c'+ii,type:'ex',it:Object.assign({t:'ex'},it),key:'c'+ii}));
+  }
   const phase=phaseById(S.active.phase),day=phase.days[S.active.day],out=[];
   const wuIdx=[];day.items.forEach((it,ii)=>{if(it.t==='wu')wuIdx.push(ii)});
   if(wuIdx.length)out.push({id:'wu',type:'wu',items:wuIdx.map(ii=>({it:day.items[ii],key:entryKey(S.active.day,ii)}))});
@@ -707,11 +809,11 @@ function currentCardId(){
 }
 
 function renderSession(el){
-  const phase=phaseById(S.active.phase),day=phase.days[S.active.day];
+  const day=activeDay();
   const c=sessionCounts();
   el.innerHTML=`
   <div class="progress"><div class="row" style="margin-bottom:6px">
-    <div class="grow"><span class="eyebrow">Phase ${phase.id} · Week ${S.active.week}</span>
+    <div class="grow"><span class="eyebrow">${S.active.customId?'Custom workout':`Phase ${S.active.phase} · Week ${S.active.week}`}</span>
       <h1 style="font-size:22px">${esc(day.name)}</h1>
       <div class="sessmeta" id="sessMeta"></div></div>
     <div class="menuwrap"><button class="btn small ghost" id="sessMenuBtn" aria-haspopup="true" aria-label="Workout options">⋯</button>
@@ -812,12 +914,12 @@ function bestSetLabel(sets){
   return `${b.w}×${b.r}`;
 }
 function buildExCard(c){
-  const phase=phaseById(S.active.phase),e=S.active.log[c.key];
+  const phase=S.active.customId?null:phaseById(S.active.phase),e=S.active.log[c.key];
   const t=target(c.it,phase,S.active.week);
-  const sugg=suggestedLoad(c.it,phase,S.active.week);
+  const sugg=phase?suggestedLoad(c.it,phase,S.active.week):null;
   const restSec=S.restOverrides[c.it.n]??c.it.rest;
   const meta=`${t.s} × ${t.r}${sugg?` · <span class="sugg">try ${sugg} ${esc(S.unit)}</span>`:''}${restSec?` · rest ${fmtRest(restSec)}`:''}`;
-  const body=exBlock(c,e,meta,t,restSec,phase.wave&&c.it.wave);
+  const body=exBlock(c,e,meta,t,restSec,!!(phase&&phase.wave&&c.it.wave));
   const complete=e.sets.every(s=>s.done);
   return foldWrap(c.key,complete,
     `<span class="ok">✓</span><span class="grow exname">${esc(e.name)}</span><span class="best">${esc(bestSetLabel(e.sets))}</span>`,body);
@@ -1017,8 +1119,8 @@ function exerciseSheet(slot,name){
 }
 
 /* --- finish flow --- */
-function compareToLast(a){ // this session vs the last time you did the same program day (#54)
-  const prev=[...S.sessions].reverse().find(s=>s.phase===a.phase&&s.day===a.day);
+function compareToLast(a){ // this session vs the last time you did the same workout (#54)
+  const prev=[...S.sessions].reverse().find(s=>a.customId?s.customId===a.customId:(s.phase===a.phase&&s.day===a.day));
   const vol=Object.values(a.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done)
     .reduce((s,x)=>s+((+x.w||0)*(+x.r||0)),0);
   const out={vol,dVol:null,beat:0,tried:0};
@@ -1044,14 +1146,15 @@ function finishSheet(){
   const elapsed=Math.round((Date.now()-a.started)/60000);
   const durGuess=Math.max(1,Math.min(elapsed,240));
   const wk=weekKeyOf(new Date()),nth=weekDoneCount(wk)+1,T=weeklyTarget(wk);
-  const phaseSessions=S.sessions.filter(s=>s.phase===a.phase).length+1;
-  const phaseTotal=phaseById(a.phase).days.filter(d=>!d.recovery).length*4;
+  const dayName=activeDay().name;
+  const phaseSessions=a.customId?0:S.sessions.filter(s=>s.phase===a.phase).length+1;
+  const phaseTotal=a.customId?1:phaseById(a.phase).days.filter(d=>!d.recovery).length*4;
   const prHtml=Object.keys(sessionPRs).length?
     `<div class="note" style="border:1px solid var(--gold);background:var(--surface2)">🏆 New estimated 1RM${Object.keys(sessionPRs).length>1?'s':''}: ${Object.keys(sessionPRs).map(k=>`${esc(LIFTS[k].label)} ${sessionPRs[k]} ${esc(S.unit)}`).join(' · ')}</div>`:'';
   const winLines=[];
-  if(cmp.dVol!=null)winLines.push(cmp.dVol>=0?`+${fmtVol(cmp.dVol)} ${S.unit} vs last ${phaseById(a.phase).days[a.day].name} day`:`${fmtVol(cmp.dVol)} ${S.unit} vs last time — lighter days happen; showing up is the win`);
+  if(cmp.dVol!=null)winLines.push(cmp.dVol>=0?`+${fmtVol(cmp.dVol)} ${S.unit} vs last ${dayName}`:`${fmtVol(cmp.dVol)} ${S.unit} vs last time — lighter days happen; showing up is the win`);
   if(cmp.beat>0)winLines.push(`Beat last time on ${cmp.beat} of ${cmp.tried} exercises`);
-  winLines.push(`Workout ${nth} of ${T} this week · Phase ${a.phase} ${Math.min(100,Math.round(phaseSessions/phaseTotal*100))}% done`);
+  winLines.push(`Workout ${nth} of ${T} this week${a.customId?'':` · Phase ${a.phase} ${Math.min(100,Math.round(phaseSessions/phaseTotal*100))}% done`}`);
   sheet(`<h2>Finish workout</h2>
   ${anyDone?'':'<div class="note" style="border-color:var(--red)">No sets are marked done yet.</div>'}
   <div class="statrow" style="margin-top:10px">
@@ -1069,10 +1172,10 @@ function finishSheet(){
   <button class="btn ghost" id="fnShare" style="margin-top:8px">Share a workout card</button>`);
   $('#fnBack').onclick=closeSheet;
   $('#fnShare').onclick=()=>shareCard({
-    title:phaseById(a.phase).days[a.day].name,
+    title:dayName,
     lines:[`${c.done} sets · ${fmtVol(cmp.vol)} ${S.unit}`,
       ...(Object.keys(sessionPRs).length?[`PR: ${Object.keys(sessionPRs).map(k=>`${LIFTS[k].label} ${sessionPRs[k]} ${S.unit}`).join(' · ')}`]:[]),
-      `Phase ${a.phase} · Week ${a.week} · workout ${nth}/${T} this week`]});
+      a.customId?`Custom workout · ${nth}/${T} this week`:`Phase ${a.phase} · Week ${a.week} · workout ${nth}/${T} this week`]});
   $('#fnSave').onclick=()=>{
     const dur=Math.max(1,Math.min(600,+$('#durIn').value||durGuess));
     saveSession(dur);closeSheet();
@@ -1080,13 +1183,14 @@ function finishSheet(){
 }
 function saveSession(dur){
   const a=S.active;
-  const sess={id:new Date().toISOString(),date:new Date().toISOString(),
-    phase:a.phase,day:a.day,week:a.week,dur,log:a.log,notes:a.notes};
+  const sess=a.customId?
+    {id:new Date().toISOString(),date:new Date().toISOString(),customId:a.customId,name:a.name,week:a.week,dur,log:a.log,notes:a.notes}:
+    {id:new Date().toISOString(),date:new Date().toISOString(),phase:a.phase,day:a.day,week:a.week,dur,log:a.log,notes:a.notes};
   S.sessions.push(sess);
   const prs=Object.keys(sessionPRs);
   S.active=null;stopRest();
   let roll={week:0,phase:0};
-  if(a.phase===S.pos.phase&&a.day===S.pos.day&&a.week===S.pos.week)roll=advancePos();else save();
+  if(!a.customId&&a.phase===S.pos.phase&&a.day===S.pos.day&&a.week===S.pos.week)roll=advancePos();else save();
   go('today');
   if(roll.phase){
     celebrate({pre:'PHASE COMPLETE',title:`Phase ${roll.phase} is done`,
@@ -1390,16 +1494,20 @@ function renderCalendar(body){
 
 /* --- history --- */
 function sessionDetailHTML(s,idx){
-  const phase=phaseById(s.phase),day=phase.days[s.day];
   const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
   const vol=sessionVolume(s);
   return `<div class="hsession"><details><summary>
     <span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${new Date(s.date).toLocaleDateString()}</span><br>
-    Phase ${s.phase} · ${esc(day.name)} <span class="sub" style="display:inline">· ${sets.length} sets · ${s.dur} min${vol?` · ${vol.toLocaleString()} ${esc(S.unit)}`:''}</span></summary>
-    ${Object.entries(s.log).filter(([,x])=>x.sets&&x.sets.some(t=>t.done)).map(([k,x])=>
-      `<div class="sub" style="margin-top:6px"><button class="exname" style="color:var(--bone);font-size:13.5px" data-exh="${esc(x.name)}">${esc(x.name)}</button><br>
-      <span style="font-family:var(--mono)">${x.sets.filter(t=>t.done).map(t=>`${t.w||'—'}×${t.r||'—'}${t.rpe?`@${t.rpe}`:''}`).join('  ')}</span>
-      ${s.notes&&s.notes[k.replace(/s\d+$/,'')]?``:''}</div>`).join('')}
+    ${esc(sessionLabel(s))} <span class="sub" style="display:inline">· ${sets.length} sets · ${s.dur} min${vol?` · ${vol.toLocaleString()} ${esc(S.unit)}`:''}</span></summary>
+    ${Object.entries(s.log).filter(([,x])=>x.sets&&x.sets.some(t=>t.done)).map(([k,x])=>{
+      const done=x.sets.filter(t=>t.done);
+      return `<div style="margin-top:12px"><button class="exname" style="font-size:14px" data-exh="${esc(x.name)}">${esc(x.name)}</button>
+      <div class="sub" style="margin-top:1px">${done.length} set${done.length>1?'s':''}</div>
+      ${done.map((t,si)=>`<div style="display:grid;grid-template-columns:52px 1fr;gap:10px;padding:5px 0 5px 4px;border-bottom:1px dashed var(--line)">
+        <span class="sub" style="margin:0">Set ${si+1}</span>
+        <span style="font-family:var(--mono);font-size:13.5px;font-variant-numeric:tabular-nums">${t.w?esc(t.w)+' '+esc(S.unit):'—'} × ${t.r?esc(t.r):'—'}${t.rpe?` <span style="color:var(--gold-dim)">@${esc(t.rpe)}</span>`:''}</span>
+      </div>`).join('')}</div>`;
+    }).join('')}
     ${s.notes&&Object.keys(s.notes).length?`<div class="note">${Object.values(s.notes).map(n=>esc(n)).join(' · ')}</div>`:''}
     <div class="row" style="margin-top:10px">
       <button class="btn small ghost" data-edit="${idx}">Edit</button>
@@ -1418,10 +1526,10 @@ function bindSessionDetail(scope){
   });
   $$('[data-edit]',scope).forEach(b=>b.onclick=()=>editSessionSheet(+b.dataset.edit));
   $$('[data-share]',scope).forEach(b=>b.onclick=()=>{
-    const s=S.sessions[+b.dataset.share],day=phaseById(s.phase).days[s.day];
+    const s=S.sessions[+b.dataset.share];
     const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
-    shareCard({title:day.name,lines:[`${sets.length} sets · ${fmtVol(sessionVolume(s))} ${S.unit}`,
-      `${s.dur} min · Phase ${s.phase} · Week ${s.week}`,
+    shareCard({title:sessionDay(s).name,lines:[`${sets.length} sets · ${fmtVol(sessionVolume(s))} ${S.unit}`,
+      `${s.dur} min${s.customId?'':` · Phase ${s.phase} · Week ${s.week}`}`,
       new Date(s.date).toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})]});
   });
 }
@@ -1836,14 +1944,14 @@ async function gcalSyncPlan(monKey){ // one-off events for a specific week's pla
   S.google.planIds[monKey]=ids;save();
 }
 async function gcalLogDone(sess){
-  const phase=phaseById(sess.phase),day=phase.days[sess.day];
+  const day=sessionDay(sess);
   const en=new Date(sess.date),st=new Date(en.getTime()-(sess.dur||60)*60000);
   const vol=sessionVolume(sess);
   const tz=Intl.DateTimeFormat().resolvedOptions().timeZone;
   await gFetch('https://www.googleapis.com/calendar/v3/calendars/primary/events',{
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({summary:`✓ ${day.name} — done`,
-      description:`Phase ${sess.phase} · Week ${sess.week} · ${sess.dur} min · ${vol.toLocaleString()} ${S.unit} volume`,
+      description:`${sess.customId?'Custom workout':`Phase ${sess.phase} · Week ${sess.week}`} · ${sess.dur} min · ${vol.toLocaleString()} ${S.unit} volume`,
       start:{dateTime:st.toISOString(),timeZone:tz},end:{dateTime:en.toISOString(),timeZone:tz}})},true);
 }
 

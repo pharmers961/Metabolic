@@ -1,4 +1,4 @@
-const CACHE = 'mm-tracker-v2.1.0'; // bump this on every release so clients get the update toast
+const CACHE = 'mm-tracker-v2.2.0'; // bump this on every release so clients get the update toast
 const ASSETS = ['./', './index.html', './app.js', './program.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

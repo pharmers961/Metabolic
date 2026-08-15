@@ -312,3 +312,20 @@ function liftKeyFor(name){
   for(const k in LIFTS){ if(LIFTS[k].re.test(name)) return k; }
   return null;
 }
+
+/* ---- Seed custom workouts (user-editable in the app; weights come from your own logs) ---- */
+const CUSTOM_SEED = [
+{ id:'arm-blaster', name:'Arm Blaster', items:[
+  {n:'Ultimate Grip Exercise (Forearms)',s:3,r:'20 sec',rest:45},
+  {n:'AML Reverse Curl',s:3,r:'20',rest:60},
+  {n:'Hammer Curl (AML Style)',s:3,r:'12-15',rest:60},
+  {n:'AML Tricep Rope Kickback',s:3,r:'15',rest:60},
+  {n:'Zottman Curls AML Style',s:3,r:'20-30',rest:60},
+  {n:'Tricep Rope Pushdown — AML Style',s:3,r:'15',rest:60},
+  {n:'The Ultimate Tricep Killer',s:3,r:'15',rest:60},
+  {n:'Barbell Curl',s:3,r:'15-20',rest:60},
+  {n:'Cable Curl',s:3,r:'12-15',rest:60},
+  {n:'Dumbbell Bicep Curl',s:3,r:'12-15',rest:60},
+  {n:'Dumbbell Single Leg Calf Raise',s:3,r:'15',rest:60}
+]}
+];
