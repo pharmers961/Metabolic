@@ -168,13 +168,57 @@ function target(entry,phase,week){
 }
 /* ---- custom workouts ---- */
 function customById(id){return (S.custom||[]).find(c=>c.id===id)}
-function sessionDay(s){ // works for program AND custom sessions
+function sessionDay(s){ // works for program, custom AND free-form activity sessions
+  if(s.cardio)return {name:s.name||'Activity',items:[]};
   if(s.customId){const c=customById(s.customId);
     return {name:s.name||(c?c.name:'Custom workout'),items:c?c.items:[]}}
   return phaseById(s.phase).days[s.day];
 }
 function sessionLabel(s){
+  if(s.cardio)return `${s.name||'Activity'} · cardio${s.phase!=null?` (Day ${s.day+1})`:''}`;
   return s.customId?(s.name||'Custom workout'):`Phase ${s.phase} · ${sessionDay(s).name}`;
+}
+
+/* ---- free-form activity / cardio day (pickleball counts) ---- */
+function cardioSheet(){
+  const prev=[...new Set(S.sessions.filter(s=>s.cardio).map(s=>s.name))];
+  const sugg=[...new Set([...prev,'Pickleball','Walk','Run','Bike','Swim','Hike','Yoga','Basketball','Rowing','Soccer'])];
+  const phase=phaseById(S.pos.phase);
+  const recIdx=phase.days.findIndex(d=>d.recovery);
+  sheet(`<h2>Log an activity</h2>
+  <div class="sub">The cardio day is yours to fill — pickleball, a hike, a long walk: it all counts as training.</div>
+  <label class="f">What did you do?</label>
+  <input id="caName" list="caDL" placeholder="e.g. Pickleball" autocapitalize="words">
+  <datalist id="caDL">${sugg.map(n=>`<option value="${esc(n)}">`).join('')}</datalist>
+  <label class="f">Duration (minutes)</label>
+  <input id="caDur" type="number" inputmode="numeric" value="45">
+  <label class="f">Notes (optional)</label>
+  <textarea id="caNote" placeholder="e.g. 3 games, won 2 — legs felt fresh"></textarea>
+  ${recIdx>=0?`<div class="togglerow" style="margin-top:8px"><div><div class="tl">Counts as Day ${recIdx+1} — ${esc(phase.days[recIdx].name)}</div>
+    <div class="td">Checks off the program's cardio day and moves you along</div></div>
+    <input type="checkbox" id="caFill" ${S.pos.day===recIdx?'checked':''}></div>`:''}
+  <div class="row" style="margin-top:14px"><button class="btn ghost" id="caCancel">Cancel</button>
+  <button class="btn" id="caSave">Save activity</button></div>`);
+  $('#caCancel').onclick=closeSheet;
+  $('#caSave').onclick=()=>{
+    const name=$('#caName').value.trim();
+    if(!name){toast('What did you do? Even “long walk” counts.');return}
+    const dur=Math.max(1,Math.min(600,+$('#caDur').value||45));
+    const note=$('#caNote').value.trim();
+    const sess={id:new Date().toISOString(),date:new Date().toISOString(),cardio:true,
+      name,dur,note,week:S.pos.week,log:{},notes:{}};
+    const fill=$('#caFill');
+    if(fill&&fill.checked&&recIdx>=0){
+      sess.phase=S.pos.phase;sess.day=recIdx;
+      if(S.pos.day===recIdx)advancePos();
+    }
+    S.sessions.push(sess);save();closeSheet();render(cur);
+    toast(`${name} logged — that's a training day banked. 🏃`,{gold:true});
+    if(S.google&&S.google.token){
+      driveBackup(true).catch(()=>{});
+      if(S.google.logWorkouts)gcalLogDone(sess).catch(()=>{});
+    }
+  };
 }
 function activeDay(){
   return S.active.customId?{name:S.active.name,items:customDayItems(customById(S.active.customId)||{items:[]})}
@@ -579,7 +623,9 @@ function renderToday(){
     hero=`<div class="hero"><div class="h-eyebrow">${todayDi>=0?'PLANNED FOR TODAY':'UP NEXT'} · PHASE ${phase.id} · WEEK ${S.pos.week} · DAY ${heroDi+1}</div>
       <h2>${esc(heroDay.name)}</h2>
       ${todayDi<0?`<div class="sub" style="margin-bottom:10px">No workout planned today — bank one early and buy yourself a rest day later.</div>`:''}
+      ${heroDay.recovery?`<div class="sub" style="margin-bottom:10px">Cardio day — follow the checklist, or just log what you did (pickleball counts).</div>`:''}
       <button class="btn" id="heroGo">Start workout</button>
+      ${heroDay.recovery?`<button class="btn ghost" id="heroCardio" style="margin-top:8px">Log an activity instead</button>`:''}
       <button class="btn ghost" id="heroPick" style="margin-top:8px">Pick a different day</button></div>`;
   }
 
@@ -633,6 +679,7 @@ function renderToday(){
     <div class="sub">Last backup ${S.lastBackup?Math.round((Date.now()-S.lastBackup)/86400000)+' days ago':'never'} — everything lives on this phone.</div></div>
     <button class="btn small" id="bkNow">Export</button></div></div>`:''}`;
   const hg=$('#heroGo');if(hg)hg.onclick=()=>{if(!S.active)startSession(S.pos.phase,heroDi>=0?heroDi:S.pos.day,S.pos.week);go('train')};
+  const hc=$('#heroCardio');if(hc)hc.onclick=cardioSheet;
   const hp=$('#heroPick');if(hp)hp.onclick=()=>go('train');
   const bk=$('#bkNow');if(bk)bk.onclick=doExport;
   const pw=$('#plWeek');if(pw)pw.onclick=()=>planWeekSheet(wk);
@@ -684,6 +731,10 @@ function renderTrain(){
       <div class="dmeta">${d.items.filter(x=>x.t!=='wu').length} movements · ${d.items.filter(x=>x.t==='wu').length} warm-ups</div>
     </button>`}).join('')}
   </div>
+  <button class="daycard recovery" id="logActivity" style="margin-top:4px">
+    <div class="dnum">ANY DAY · ACTIVITY</div><div class="dname">Log cardio / activity</div>
+    <div class="dmeta">Pickleball, hike, run, swim — type it, time it, it counts.</div>
+  </button>
   <label class="f" style="margin-top:18px">My workouts</label>
   <div class="sub" style="margin-bottom:8px">Your own sessions, outside the program — history and last-time weights track them the same way.</div>
   ${(S.custom||[]).map(c=>{
@@ -699,6 +750,7 @@ function renderTrain(){
   $$('#phasePills .pill',el).forEach(b=>b.onclick=()=>{S.pos.phase=+b.dataset.p;clampPos();save();renderTrain()});
   $$('#weekPills .pill',el).forEach(b=>b.onclick=()=>{S.pos.week=+b.dataset.w;save();renderTrain()});
   $$('.daycard[data-d]',el).forEach(b=>b.onclick=()=>{startSession(S.pos.phase,+b.dataset.d,S.pos.week);renderTrain()});
+  $('#logActivity').onclick=cardioSheet;
   $$('[data-cw]',el).forEach(b=>b.onclick=()=>{startCustomSession(b.dataset.cw);renderTrain()});
   $$('[data-cedit]',el).forEach(b=>b.onclick=()=>customEditorSheet(b.dataset.cedit));
   $('#newCustom').onclick=()=>customEditorSheet(null);
@@ -1662,6 +1714,17 @@ function renderCalendar(body){
 
 /* --- history --- */
 function sessionDetailHTML(s,idx){
+  if(s.cardio){
+    return `<div class="hsession"><details><summary>
+      <span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${new Date(s.date).toLocaleDateString()}</span><br>
+      🏃 ${esc(s.name)} <span class="sub" style="display:inline">· activity · ${s.dur} min${s.phase!=null?` · counted as Day ${s.day+1}`:''}</span></summary>
+      ${s.note?`<div class="note">${esc(s.note)}</div>`:''}
+      <div class="row" style="margin-top:10px;flex-wrap:wrap">
+        <button class="btn small ghost" data-edit="${idx}">Edit</button>
+        <button class="btn small ghost" data-share="${idx}">Share</button>
+        <button class="btn small danger" data-del="${idx}">Delete</button></div>
+    </details></div>`;
+  }
   const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
   const vol=sessionVolume(s);
   return `<div class="hsession"><details><summary>
@@ -1707,14 +1770,36 @@ function bindSessionDetail(scope){
   });
   $$('[data-share]',scope).forEach(b=>b.onclick=()=>{
     const s=S.sessions[+b.dataset.share];
+    if(s.cardio){
+      shareCard({title:s.name,lines:[`${s.dur} min of movement`,
+        ...(s.note?[s.note.slice(0,40)]:[]),
+        new Date(s.date).toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})]});
+      return;
+    }
     const sets=Object.values(s.log).filter(x=>x.sets).flatMap(x=>x.sets).filter(x=>x.done);
     shareCard({title:sessionDay(s).name,lines:[`${sets.length} sets · ${fmtVol(sessionVolume(s))} ${S.unit}`,
-      `${s.dur} min${s.customId?'':` · Phase ${s.phase} · Week ${s.week}`}`,
+      `${s.dur} min${s.customId||s.phase==null?'':` · Phase ${s.phase} · Week ${s.week}`}`,
       new Date(s.date).toLocaleDateString(undefined,{weekday:'long',month:'short',day:'numeric'})]});
   });
 }
 function editSessionSheet(idx){
   const s=S.sessions[idx];
+  if(s.cardio){
+    sheet(`<h2>Edit activity</h2>
+    <label class="f">Activity</label><input id="caEName" value="${esc(s.name)}">
+    <label class="f">Duration (minutes)</label><input id="caEDur" type="number" value="${esc(s.dur)}">
+    <label class="f">Notes</label><textarea id="caENote">${esc(s.note||'')}</textarea>
+    <div class="row" style="margin-top:14px"><button class="btn ghost" id="edCancel">Cancel</button>
+    <button class="btn" id="edSave">Save changes</button></div>`);
+    $('#edCancel').onclick=closeSheet;
+    $('#edSave').onclick=()=>{
+      s.name=$('#caEName').value.trim()||s.name;
+      s.dur=Math.max(1,Math.min(600,+$('#caEDur').value||s.dur));
+      s.note=$('#caENote').value.trim();
+      save();closeSheet();renderStats();toast('Activity updated.');
+    };
+    return;
+  }
   const entries=Object.entries(s.log).filter(([,x])=>x.sets&&x.sets.some(t=>t.done));
   sheet(`<h2>Edit workout</h2>
   <div class="sub">${new Date(s.date).toLocaleDateString()} — fix typos in weights and reps.</div>
