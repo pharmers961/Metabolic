@@ -121,6 +121,18 @@ button.exname{padding:0;text-align:left;text-decoration:underline dotted var(--g
 .wu.done .wbox{background:var(--green);border-color:var(--green);color:#062012}
 .wu.done .wt{color:var(--muted);text-decoration:line-through}
 .progress{position:sticky;top:0;z-index:5;background:var(--bg);padding:10px 0 8px}
+.jumpbar{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;scrollbar-width:none}
+.jumpbar::-webkit-scrollbar{display:none}
+.jchip{flex:0 0 auto;min-width:32px;height:32px;border-radius:9px;border:1px solid var(--line);
+  background:var(--surface2);color:var(--muted);font-family:var(--mono);font-size:12.5px;font-weight:600}
+.jchip.done{color:var(--green);border-color:var(--green)}
+.jchip.cur{background:var(--gold);color:#141204;border-color:var(--gold)}
+.tbtn{min-height:44px;border-radius:9px;border:1px solid var(--gold-dim);background:var(--surface2);
+  color:var(--gold);font-family:var(--mono);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;padding:0 6px}
+.vbtn{display:inline-flex;align-items:center;justify-content:center;width:26px;height:22px;border-radius:6px;
+  background:var(--surface2);border:1px solid var(--gold-dim);color:var(--gold);font-size:10px;
+  text-decoration:none;vertical-align:2px;margin-left:4px}
+.setrow{transition:transform .15s}
 .pbar{height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
 .pbar>div{height:100%;background:var(--gold);width:0;transition:width .3s}
 .sessmeta{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:4px;font-variant-numeric:tabular-nums}
@@ -212,7 +224,7 @@ button.exname{padding:0;text-align:left;text-decoration:underline dotted var(--g
 .calhead button{padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface2);min-height:40px}
 .calgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;text-align:center}
 .calgrid .dow{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;padding:4px 0;font-weight:600}
-.calcell{aspect-ratio:1;border-radius:10px;border:1px solid transparent;display:flex;flex-direction:column;
+.calcell{aspect-ratio:1;min-height:44px;border-radius:10px;border:1px solid transparent;display:flex;flex-direction:column;
   align-items:center;justify-content:center;font-size:13px;color:var(--muted);font-family:var(--mono);position:relative;
   font-variant-numeric:tabular-nums;background:none;width:100%}
 .calcell.inmonth{color:var(--bone)}

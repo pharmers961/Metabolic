@@ -7,6 +7,12 @@
   "display": "standalone",
   "background_color": "#0C0C0A",
   "theme_color": "#0C0C0A",
+  "shortcuts": [
+    { "name": "Start today's workout", "url": "./index.html?action=start",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] },
+    { "name": "Plan this week", "url": "./index.html?action=plan",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }] }
+  ],
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
