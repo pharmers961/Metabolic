@@ -24,9 +24,14 @@ PWAs and OAuth (Fitbit/Google) require HTTPS, so the files need to live at a rea
 
 Open the URL in Chrome → menu (⋮) → **Add to Home screen** → Install. It launches full-screen and works offline after the first load.
 
-## 3. Set your schedule
+## 3. Plan your weeks
 
-Settings → **Training schedule**: pick which program day falls on which weekday and your usual start time. This powers the Today screen, the calendar view (planned/missed dots), and calendar sync.
+On first run the app asks which days you can usually train — that becomes your **usual pattern** (editable in Settings). Each real week is then planned on actual dates:
+
+- **Today → "Plan week"** puts this week's workouts on concrete dates (prefilled from your pattern).
+- **Miss a day?** Today shows a "Missed" card — one tap reschedules it to another date and the calendar (and Google Calendar, if connected) adjusts. Or skip it; the streak forgives one light week.
+- The **commitment ring** on Today tracks workouts done vs. planned; the week streak counts weeks where you hit your own plan, and warns when it's at risk.
+- New PRs get a full-screen celebration and land on the **trophy wall** (Stats → Lifts). Finish summaries compare you to the last time you did that day, and workout/monthly **share cards** can be sent anywhere.
 
 - **Add to calendar (no sign-in):** Settings → "Add to calendar…" gives one-tap Google Calendar links per training day, or a `.ics` file that imports into Google/Apple/Outlook as weekly recurring events.
 
