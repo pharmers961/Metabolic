@@ -1473,6 +1473,30 @@ const RING=2*Math.PI*46;
 async function acquireWakeLock(){
   if('wakeLock' in navigator){try{wakeLock=await navigator.wakeLock.request('screen')}catch(e){}}
 }
+/* Hand the alarm to the service worker so it fires even when Android
+   freezes the minimized page (the SW decides at fire time; it skips the
+   notification if the app is visible). */
+function swRestMsg(msg){
+  if(navigator.serviceWorker&&navigator.serviceWorker.controller)
+    navigator.serviceWorker.controller.postMessage(msg);
+}
+function scheduleRestAlarm(){
+  if(!rest||rest.paused||rest.quick){swRestMsg({type:'REST_CANCEL'});return}
+  if(!(S.prefs.notify&&'Notification' in window&&Notification.permission==='granted'))return;
+  swRestMsg({type:'REST_SCHEDULE',end:rest.end,next:rest.next});
+}
+function nudgeNotifications(){
+  if(S.prefs.notify||S.notifNudged)return;
+  if(!('Notification' in window)||Notification.permission==='denied')return;
+  S.notifNudged=true;save();
+  toast('Phone in your pocket between sets? Turn on alerts and the timer buzzes you even with the app minimized.',
+    {ms:9000,action:'Enable',onAction:async()=>{
+      const p=await Notification.requestPermission();
+      if(p==='granted'){S.prefs.notify=true;save();scheduleRestAlarm();
+        toast('On — rest alerts now reach you when the app is in the background.',{gold:true})}
+      else toast('Notifications are blocked for this site in your browser settings.');
+    }});
+}
 function startRest(sec,nextName,opts={}){
   if(!S.prefs.restAuto)return;
   const dur=S.restOverrides[opts.exName]??sec;
@@ -1487,7 +1511,9 @@ function startRest(sec,nextName,opts={}){
     $('#restBeat').textContent=rest.beat;
     $('#restPause').textContent='Pause';
     miniT=setTimeout(()=>{if(rest&&!rest.paused)showPill()},6000);
+    nudgeNotifications();
   }
+  scheduleRestAlarm();
   tickRest();
   restT=setInterval(tickRest,250);
   announce(`Rest ${fmtRest(dur)}, then ${rest.next}`);
@@ -1517,6 +1543,7 @@ function showOverlay(){
   $('#restBeat').textContent=rest.beat||'';
 }
 function stopRest(){clearInterval(restT);clearTimeout(miniT);rest=null;
+  swRestMsg({type:'REST_CANCEL'});
   $('#restOverlay').classList.remove('on');$('#restPill').classList.remove('on')}
 function endRest(alarm){
   const nxt=rest?rest.next:'';
@@ -1540,13 +1567,13 @@ function chime(){
 function bindRest(){
   $('#restPlus').onclick=()=>{if(!rest)return;
     if(rest.paused)rest.leftPause+=30;else rest.end+=30000;
-    rest.total=Math.max(rest.total,restLeft());tickRest()};
+    rest.total=Math.max(rest.total,restLeft());tickRest();scheduleRestAlarm()};
   $('#restMinus').onclick=()=>{if(!rest)return;
-    if(rest.paused)rest.leftPause=Math.max(1,rest.leftPause-15);else rest.end-=15000;tickRest()};
+    if(rest.paused)rest.leftPause=Math.max(1,rest.leftPause-15);else rest.end-=15000;tickRest();scheduleRestAlarm()};
   $('#restPause').onclick=()=>{if(!rest)return;
     if(rest.paused){rest.end=Date.now()+rest.leftPause*1000;rest.paused=false;$('#restPause').textContent='Pause'}
     else{rest.leftPause=restLeft();rest.paused=true;$('#restPause').textContent='Resume'}
-    tickRest()};
+    tickRest();scheduleRestAlarm()};
   $('#restSkip').onclick=()=>endRest(false);
   $('#pillSkip').onclick=()=>endRest(false);
   $('#restMini').onclick=showPill;
@@ -2311,7 +2338,7 @@ function renderSettings(){
       <input type="checkbox" id="tgSound" ${S.prefs.sound?'checked':''}></div>
     <div class="togglerow"><div><div class="tl">Vibration</div></div>
       <input type="checkbox" id="tgHaptic" ${S.prefs.haptic?'checked':''}></div>
-    <div class="togglerow"><div><div class="tl">Notify when rest ends</div><div class="td">Useful when the screen is off or you're in another app</div></div>
+    <div class="togglerow"><div><div class="tl">Notify when rest ends</div><div class="td">Buzzes your phone even with the app minimized or the screen off (rests up to ~5 min)</div></div>
       <input type="checkbox" id="tgNotify" ${S.prefs.notify?'checked':''}></div>
   </div>
 

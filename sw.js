@@ -1,4 +1,4 @@
-const CACHE = 'mm-tracker-v2.4.0'; // bump this on every release so clients get the update toast
+const CACHE = 'mm-tracker-v2.5.0'; // bump this on every release so clients get the update toast
 const ASSETS = ['./', './index.html', './app.js', './program.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -12,8 +12,42 @@ self.addEventListener('activate', (e) => {
 });
 
 // The app shows an "update ready" toast; refreshing posts this message.
+// REST_SCHEDULE / REST_CANCEL run the rest alarm here so it survives the page
+// being minimized: Android freezes the page's timers, but waitUntil keeps this
+// worker alive for the countdown (Chrome allows ~5 min — rests are ≤3 min).
+let restAlarm = null;
+function clearRestAlarm() {
+  if (restAlarm) { clearTimeout(restAlarm.t); restAlarm.resolve(); restAlarm = null; }
+}
 self.addEventListener('message', (e) => {
-  if (e.data === 'SKIP_WAITING') self.skipWaiting();
+  if (e.data === 'SKIP_WAITING') { self.skipWaiting(); return; }
+  const d = e.data || {};
+  if (d.type === 'REST_SCHEDULE') {
+    clearRestAlarm();
+    const delay = d.end - Date.now();
+    if (delay <= 0) return;
+    e.waitUntil(new Promise((resolve) => {
+      const t = setTimeout(async () => {
+        restAlarm = null;
+        try {
+          const cs = await self.clients.matchAll({ type: 'window' });
+          const visible = cs.some((c) => c.visibilityState === 'visible');
+          // If the app is on screen, its own chime/vibration handles it.
+          if (!visible) {
+            await self.registration.showNotification('Rest over', {
+              body: d.next ? `Back to ${d.next}` : 'Back to work',
+              icon: 'icon-192.png', badge: 'icon-192.png',
+              vibrate: [200, 100, 200, 100, 400], tag: 'mm-rest', renotify: true,
+            });
+          }
+        } catch (err) {}
+        resolve();
+      }, delay);
+      restAlarm = { t, resolve };
+    }));
+  } else if (d.type === 'REST_CANCEL') {
+    clearRestAlarm();
+  }
 });
 
 self.addEventListener('notificationclick', (e) => {
