@@ -1,4 +1,4 @@
-const CACHE = 'mm-tracker-v2.5.0'; // bump this on every release so clients get the update toast
+const CACHE = 'mm-tracker-v2.5.1'; // bump this on every release so clients get the update toast
 const ASSETS = ['./', './index.html', './app.js', './program.js', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -15,10 +15,16 @@ self.addEventListener('activate', (e) => {
 // REST_SCHEDULE / REST_CANCEL run the rest alarm here so it survives the page
 // being minimized: Android freezes the page's timers, but waitUntil keeps this
 // worker alive for the countdown (Chrome allows ~5 min — rests are ≤3 min).
+// While the app is hidden, a silent same-tag notification shows the live
+// countdown in the shade; the final one buzzes.
 let restAlarm = null;
-function clearRestAlarm() {
-  if (restAlarm) { clearTimeout(restAlarm.t); restAlarm.resolve(); restAlarm = null; }
+function closeRestNotifs() {
+  return self.registration.getNotifications({ tag: 'mm-rest' }).then((ns) => ns.forEach((n) => n.close()));
 }
+function clearRestAlarm() {
+  if (restAlarm) { clearInterval(restAlarm.i); clearTimeout(restAlarm.t); restAlarm.resolve(); restAlarm = null; }
+}
+const fmtLeft = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 self.addEventListener('message', (e) => {
   if (e.data === 'SKIP_WAITING') { self.skipWaiting(); return; }
   const d = e.data || {};
@@ -27,12 +33,27 @@ self.addEventListener('message', (e) => {
     const delay = d.end - Date.now();
     if (delay <= 0) return;
     e.waitUntil(new Promise((resolve) => {
+      const update = async () => {
+        try {
+          const cs = await self.clients.matchAll({ type: 'window' });
+          if (cs.some((c) => c.visibilityState === 'visible')) { await closeRestNotifs(); return; } // app on screen: its own ring shows the time
+          const left = Math.max(0, Math.ceil((d.end - Date.now()) / 1000));
+          if (left > 0) {
+            await self.registration.showNotification(`Rest — ${fmtLeft(left)} left`, {
+              body: d.next ? `Then ${d.next} · tap to open` : 'Tap to open',
+              icon: 'icon-192.png', badge: 'icon-192.png', tag: 'mm-rest', silent: true,
+            });
+          }
+        } catch (err) {}
+      };
+      const i = setInterval(update, 10000);
       const t = setTimeout(async () => {
+        clearInterval(i);
         restAlarm = null;
         try {
           const cs = await self.clients.matchAll({ type: 'window' });
           const visible = cs.some((c) => c.visibilityState === 'visible');
-          // If the app is on screen, its own chime/vibration handles it.
+          await closeRestNotifs();
           if (!visible) {
             await self.registration.showNotification('Rest over', {
               body: d.next ? `Back to ${d.next}` : 'Back to work',
@@ -43,10 +64,14 @@ self.addEventListener('message', (e) => {
         } catch (err) {}
         resolve();
       }, delay);
-      restAlarm = { t, resolve };
+      restAlarm = { i, t, resolve };
+      update(); // paint the shade right away if the app is already hidden
     }));
   } else if (d.type === 'REST_CANCEL') {
     clearRestAlarm();
+    e.waitUntil(closeRestNotifs());
+  } else if (d.type === 'REST_FOREGROUND') {
+    e.waitUntil(closeRestNotifs()); // user came back — the in-app ring takes over
   }
 });
 
