@@ -1594,7 +1594,7 @@ function onVisibility(){
   if(document.visibilityState==='visible'){
     if(S&&S.active)acquireWakeLock();
     if(rest&&!rest.paused&&Date.now()>rest.end)endRest(true);
-    else if(rest)tickRest();
+    else if(rest){tickRest();swRestMsg({type:'REST_FOREGROUND'})} // clear the shade countdown — the ring takes over
   }
 }
 
